@@ -1,4 +1,4 @@
-const CACHE = '5x5-v4';
+const CACHE = '5x5-v6';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -16,7 +16,10 @@ self.addEventListener('activate', (event) => {
 // Serve from cache straight away, refresh the cache in the background.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  const url = new URL(req.url);
+  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+  // Workout data always comes straight from the network so a pushed backup shows up at once.
+  if (url.pathname.endsWith('/5x5-data.json')) return;
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(req, { ignoreSearch: true });

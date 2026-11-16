@@ -3,11 +3,11 @@
 /* ---------- Program definition ---------- */
 
 const LIFTS = {
-  squat: { name: 'Squat', sets: 5, barWarmup: true },
-  bench: { name: 'Bench Press', sets: 5, barWarmup: true },
-  row: { name: 'Barbell Row', sets: 5, barWarmup: false },
-  ohp: { name: 'Overhead Press', sets: 5, barWarmup: true },
-  deadlift: { name: 'Deadlift', sets: 1, barWarmup: false },
+  squat: { name: 'Squat', sets: 5 },
+  bench: { name: 'Bench Press', sets: 5 },
+  row: { name: 'Barbell Row', sets: 5 },
+  ohp: { name: 'Overhead Press', sets: 5 },
+  deadlift: { name: 'Deadlift', sets: 1 },
   dbrow: { name: 'Dumbbell Row', sets: 3, reps: 10, db: true, opt: true },
   dbcurl: { name: 'Dumbbell Curl', sets: 3, reps: 10, db: true, opt: true },
   dbshrug: { name: 'Dumbbell Shrug', sets: 3, reps: 10, db: true, opt: true },
@@ -77,14 +77,15 @@ function platesPerSide(w, bar, unit) {
   return { plates, rest: Math.round(left * 100) / 100 };
 }
 
-function warmups(id, w, bar, unit) {
+/* Up to three warm-up sets of five at 70%, 80% and 90% of the work weight, never below the bar.
+   Light work weights give fewer sets because the rounded steps collapse. */
+function warmups(w, bar, unit) {
   const step = UNITS[unit].step;
   const out = [];
-  if (LIFTS[id].barWarmup && w > bar) out.push({ w: bar, sets: 2, reps: 5 });
-  let last = LIFTS[id].barWarmup ? bar : 0;
-  [[0.4, 5], [0.6, 3], [0.8, 2]].forEach(([pct, reps]) => {
+  let last = 0;
+  [0.7, 0.8, 0.9].forEach((pct) => {
     const ww = Math.max(bar, roundTo(w * pct, step));
-    if (ww > last && ww < w) { out.push({ w: ww, sets: 1, reps }); last = ww; }
+    if (ww > last && ww < w) { out.push({ w: ww, reps: 5 }); last = ww; }
   });
   return out;
 }
@@ -139,6 +140,7 @@ if (typeof module !== 'undefined') {
 
 if (typeof document !== 'undefined') (() => {
   const KEY = 'fivebyfive.v1';
+  const DATA_FILE = '5x5-data.json';
   const view = document.getElementById('view');
   const restEl = document.getElementById('rest');
   const tabsEl = document.getElementById('tabs');
@@ -168,8 +170,31 @@ if (typeof document !== 'undefined') (() => {
     } catch (e) { /* fall through to a fresh state */ }
     return freshState('kg');
   }
-  function save() {
+  /* Every change stamps the time, so the app can tell whether the device or the repository copy is newer. */
+  function save(stamp = true) {
+    if (stamp) state.updated = Date.now();
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* storage unavailable */ }
+  }
+  const validBackup = (d) => d && d.v === 1 && d.lifts && Array.isArray(d.history) && UNITS[d.unit];
+
+  /* The repository's backup file is the default data. Take it when this device has nothing yet,
+     or when the file was saved more recently than anything done here. Never mid-workout. */
+  async function syncFromRepo() {
+    let data;
+    try {
+      const res = await fetch(`${DATA_FILE}?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; /* offline or no file: keep what is on the device */ }
+    if (!validBackup(data) || state.active) return;
+    const localAt = state.updated || 0;
+    const untouched = !localAt && !state.history.length;
+    if ((data.updated || 0) > localAt || (untouched && data.history.length)) {
+      state = fillLifts(data);
+      flash = null;
+      save(false);
+      render();
+    }
   }
 
   const fmt = (w, unit) => `${num(w)}${unit || state.unit}`;
@@ -249,26 +274,24 @@ if (typeof document !== 'undefined') (() => {
       ${recentHtml()}`;
   }
 
+  function sideText(w) {
+    const { plates, rest } = platesPerSide(w, state.bar, state.unit);
+    if (plates.length) return `Each side: ${plates.map(num).join(' + ')}${rest ? ` (+${num(rest)} unloadable)` : ''}`;
+    return w < state.bar ? 'Lighter than the bar' : 'Empty bar';
+  }
+
   function activeView() {
     const a = state.active;
     const cards = a.ex.map((ex, i) => {
       const reps = repsFor(ex.id);
-      let side;
-      if (LIFTS[ex.id].db) {
-        side = `${fmt(ex.w)} per dumbbell`;
-      } else {
-        const { plates, rest } = platesPerSide(ex.w, state.bar, state.unit);
-        side = plates.length
-          ? `Each side: ${plates.map(num).join(' + ')}${rest ? ` (+${num(rest)} unloadable)` : ''}`
-          : ex.w < state.bar ? 'Lighter than the bar' : 'Empty bar';
-      }
+      const side = LIFTS[ex.id].db ? `${fmt(ex.w)} per dumbbell` : sideText(ex.w);
       const sets = ex.sets.map((s, j) => {
         const cls = s === null ? '' : s === reps ? ' done' : ' miss';
         return `<button class="set${cls}" data-act="set" data-e="${i}" data-s="${j}">${s === null ? reps : s}</button>`;
       }).join('');
-      const warm = LIFTS[ex.id].db ? [] : warmups(ex.id, ex.w, state.bar, state.unit);
+      const warm = LIFTS[ex.id].db ? [] : warmups(ex.w, state.bar, state.unit);
       const warmHtml = warm.length ? `<details><summary>Warm-up sets</summary><ul class="warm">${
-        warm.map((w) => `<li><span>${w.sets}×${w.reps}</span><span>${fmt(w.w)}</span></li>`).join('')
+        warm.map((w) => `<li><span>${w.reps} reps</span><span>${sideText(w.w)}</span><span>${fmt(w.w)}</span></li>`).join('')
       }</ul></details>` : '';
       const optTag = LIFTS[ex.id].opt ? ' · optional' : '';
       return `<section class="card">
@@ -398,7 +421,7 @@ if (typeof document !== 'undefined') (() => {
       <button class="secondary" data-act="export">Back up data</button>
       <button class="secondary" data-act="import">Restore from backup</button>
       <button class="secondary danger" data-act="reset">Erase everything</button>
-      <p class="hint">Your data is stored only on this device. Back it up now and then.</p>`;
+      <p class="hint">Workouts are saved on this device. After a workout, back up and push ${DATA_FILE} to the repository; the app loads that file whenever it is newer than what is on the device.</p>`;
   }
 
   /* ----- Rest timer and elapsed clock ----- */
@@ -483,7 +506,7 @@ if (typeof document !== 'undefined') (() => {
   }
 
   async function exportData() {
-    const file = new File([JSON.stringify(state, null, 2)], '5x5-backup.json', { type: 'application/json' });
+    const file = new File([JSON.stringify(state, null, 2)], DATA_FILE, { type: 'application/json' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; }
     }
@@ -499,7 +522,7 @@ if (typeof document !== 'undefined') (() => {
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (!data || data.v !== 1 || !data.lifts || !Array.isArray(data.history) || !UNITS[data.unit]) throw new Error('bad file');
+      if (!validBackup(data)) throw new Error('bad file');
       if (!confirm(`Replace everything on this device with the backup (${data.history.length} workouts)?`)) return;
       state = fillLifts(data);
       save();
@@ -574,10 +597,12 @@ if (typeof document !== 'undefined') (() => {
     if (document.visibilityState === 'visible') {
       if (state.active) keepAwake(true);
       tick();
+      syncFromRepo();
     }
   });
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   if (state.active) keepAwake(true);
   render();
+  syncFromRepo();
 })();
