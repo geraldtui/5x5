@@ -141,6 +141,13 @@ if (typeof module !== 'undefined') {
 if (typeof document !== 'undefined') (() => {
   const KEY = 'fivebyfive.v1';
   const DATA_FILE = '5x5-data.json';
+  /* Passcode gate. Only a salted hash of the passcode is kept here. This keeps casual visitors out of
+     the app; it does not protect the data file, which anyone can download from the site directly. */
+  const UNLOCK_KEY = 'fivebyfive.unlocked';
+  const PASS_SALT = 'fivebyfive:';
+  const PASS_HASH = 'a07b0468321daaf4ba732b7af74f26b5c067b96b9aa45cd5bb6a8f15e77b5ccd';
+  const PASS_LENGTH = 4;
+  const lockEl = document.getElementById('lock');
   const view = document.getElementById('view');
   const restEl = document.getElementById('rest');
   const tabsEl = document.getElementById('tabs');
@@ -152,6 +159,8 @@ if (typeof document !== 'undefined') (() => {
   let flash = null;
   let audio = null;
   let wakeLock = null;
+  let unlocked = false;
+  let entry = '';
 
   /* Older saves and backups predate the dumbbell accessories and the increase frequency; give them defaults. */
   function fillLifts(s) {
@@ -180,13 +189,14 @@ if (typeof document !== 'undefined') (() => {
   /* The repository's backup file is the default data. Take it when this device has nothing yet,
      or when the file was saved more recently than anything done here. Never mid-workout. */
   async function syncFromRepo() {
+    if (!unlocked) return;
     let data;
     try {
       const res = await fetch(`${DATA_FILE}?t=${Date.now()}`, { cache: 'no-store' });
       if (!res.ok) return;
       data = await res.json();
     } catch (e) { return; /* offline or no file: keep what is on the device */ }
-    if (!validBackup(data) || state.active) return;
+    if (!validBackup(data) || state.active || !unlocked) return;
     const localAt = state.updated || 0;
     const untouched = !localAt && !state.history.length;
     if ((data.updated || 0) > localAt || (untouched && data.history.length)) {
@@ -233,6 +243,49 @@ if (typeof document !== 'undefined') (() => {
         await wakeLock.release();
       }
     } catch (e) { /* not supported or denied */ }
+  }
+
+  /* ----- Passcode lock ----- */
+
+  async function hashCode(code) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(PASS_SALT + code));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  function lockView(msg) {
+    const dots = Array.from({ length: PASS_LENGTH }, (_, i) => `<i class="${i < entry.length ? 'on' : ''}"></i>`).join('');
+    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'back'].map((k) =>
+      k === '' ? '<span></span>' : `<button data-key="${k}"${k === 'back' ? ' aria-label="Delete"' : ''}>${k === 'back' ? '⌫' : k}</button>`).join('');
+    lockEl.hidden = false;
+    lockEl.innerHTML = `<h1>Enter passcode</h1><div class="dots">${dots}</div><p class="msg">${msg || ''}</p><div class="keys">${keys}</div>`;
+  }
+  async function pressKey(key) {
+    if (key === 'back') entry = entry.slice(0, -1);
+    else if (entry.length < PASS_LENGTH) entry += key;
+    lockView();
+    if (entry.length < PASS_LENGTH) return;
+    const attempt = entry;
+    entry = '';
+    if (!window.crypto || !crypto.subtle) { lockView('Open the app over HTTPS to unlock it.'); return; }
+    if (await hashCode(attempt) !== PASS_HASH) { lockView('Wrong passcode. Try again.'); return; }
+    try { localStorage.setItem(UNLOCK_KEY, PASS_HASH); } catch (e) { /* will ask again next launch */ }
+    unlock();
+  }
+  function unlock() {
+    unlocked = true;
+    lockEl.hidden = true;
+    lockEl.innerHTML = '';
+    if (state.active) keepAwake(true);
+    render();
+    syncFromRepo();
+  }
+  function lock() {
+    try { localStorage.removeItem(UNLOCK_KEY); } catch (e) { /* nothing stored */ }
+    unlocked = false;
+    entry = '';
+    view.innerHTML = '';
+    restEl.hidden = true;
+    keepAwake(false);
+    lockView();
   }
 
   /* ----- Views ----- */
@@ -420,6 +473,7 @@ if (typeof document !== 'undefined') (() => {
       </section>
       <button class="secondary" data-act="export">Back up data</button>
       <button class="secondary" data-act="import">Restore from backup</button>
+      <button class="secondary" data-act="lock">Lock app</button>
       <button class="secondary danger" data-act="reset">Erase everything</button>
       <p class="hint">Workouts are saved on this device. After a workout, back up and push ${DATA_FILE} to the repository; the app loads that file whenever it is newer than what is on the device.</p>`;
   }
@@ -427,6 +481,7 @@ if (typeof document !== 'undefined') (() => {
   /* ----- Rest timer and elapsed clock ----- */
 
   function tick() {
+    if (!unlocked) return;
     const a = state.active;
     const el = document.getElementById('elapsed');
     if (a && el) el.textContent = clock((Date.now() - a.started) / 1000);
@@ -543,6 +598,11 @@ if (typeof document !== 'undefined') (() => {
   });
 
   document.addEventListener('click', (ev) => {
+    if (!unlocked) {
+      const key = ev.target.closest('[data-key]');
+      if (key) pressKey(key.dataset.key);
+      return;
+    }
     const tabBtn = ev.target.closest('[data-tab]');
     if (tabBtn) { tab = tabBtn.dataset.tab; render(); window.scrollTo(0, 0); return; }
     const el = ev.target.closest('[data-act]');
@@ -582,6 +642,7 @@ if (typeof document !== 'undefined') (() => {
       case 'unit': setUnit(d.u); break;
       case 'export': exportData(); return;
       case 'import': importFile.click(); return;
+      case 'lock': lock(); return;
       case 'reset':
         if (!confirm('Erase all workouts and settings on this device? This cannot be undone.')) return;
         state = freshState(state.unit);
@@ -594,7 +655,7 @@ if (typeof document !== 'undefined') (() => {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
+    if (document.visibilityState === 'visible' && unlocked) {
       if (state.active) keepAwake(true);
       tick();
       syncFromRepo();
@@ -602,7 +663,7 @@ if (typeof document !== 'undefined') (() => {
   });
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  if (state.active) keepAwake(true);
-  render();
-  syncFromRepo();
+  let remembered = null;
+  try { remembered = localStorage.getItem(UNLOCK_KEY); } catch (e) { /* storage unavailable */ }
+  if (remembered === PASS_HASH) unlock(); else lockView();
 })();
