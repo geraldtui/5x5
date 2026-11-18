@@ -43,42 +43,48 @@
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 1
+      "streak": 1,
+      "target": 10
     },
     "dbcurl": {
       "w": 10,
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 1
+      "streak": 1,
+      "target": 10
     },
     "dbshrug": {
       "w": 22.5,
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 1
+      "streak": 1,
+      "target": 10
     },
     "dbtri": {
       "w": 15,
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 1
+      "streak": 1,
+      "target": 10
     },
     "dblat": {
       "w": 10,
       "inc": 2.5,
       "fails": 1,
       "every": 3,
-      "streak": 0
+      "streak": 0,
+      "target": 10
     },
     "dbfly": {
       "w": 10,
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 1
+      "streak": 1,
+      "target": 10
     }
   },
   "next": "A",
@@ -621,5 +627,5 @@
     }
   ],
   "active": null,
-  "updated": 1795028463692
+  "updated": 1795029862511
 }
