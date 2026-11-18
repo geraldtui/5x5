@@ -22,6 +22,10 @@ const WORKOUTS = {
 };
 const REPS = 5;
 const repsFor = (id) => LIFTS[id].reps || REPS;
+/* The optional dumbbell accessories in each workout are done as one superset: a set of each, back to
+   back, then a rest, for as many rounds as they have sets. */
+const inSuperset = (id) => !!LIFTS[id].opt;
+const SUPERSET_REST = 90;
 /* Smallest sensible weight: dumbbells go down to one step, barbell lifts stop at the bar. */
 const minW = (id, bar, unit) => (LIFTS[id].db ? UNITS[unit].step : bar);
 const FAILS_BEFORE_DELOAD = 3;
@@ -168,36 +172,60 @@ function mergeStates(device, repo, now = Date.now()) {
   return { ...base, history, deleted, active: null, updated: now };
 }
 
-/* Projects each lift's working weight over the coming weeks, assuming every rep is hit and workouts
-   keep alternating A and B, `perWeek` times a week. It applies each lift's own increment and
-   increase frequency. Returns, per lift, the heaviest weight it would be lifted at in each week. */
-function forecast(st, weeks = 4, perWeek = 3) {
+const TRAINING_DAYS = [1, 3, 5]; // Monday, Wednesday, Friday (Date.getDay numbering)
+
+/* The forecast calendar: the Friday of each of the next `weeks` weeks (from next Monday on), and every
+   training day from today up to the last of them. Today counts only if no workout is logged today. */
+function forecastPlan(now, lastWorkout, weeks = 4) {
+  const day = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d; };
+  const today = day(now);
+  const nextMonday = new Date(today);
+  nextMonday.setDate(today.getDate() + ((8 - today.getDay()) % 7 || 7));
+  const fridays = Array.from({ length: weeks }, (_, k) => {
+    const f = new Date(nextMonday);
+    f.setDate(nextMonday.getDate() + 4 + 7 * k);
+    return f;
+  });
+  const d = new Date(today);
+  if (lastWorkout && day(lastWorkout) >= today) d.setDate(d.getDate() + 1);
+  const sessions = [];
+  for (; d <= fridays[weeks - 1]; d.setDate(d.getDate() + 1)) {
+    if (TRAINING_DAYS.includes(d.getDay())) sessions.push(new Date(d));
+  }
+  return { fridays, sessions };
+}
+
+/* Projects each lift's working weight, assuming every rep is hit and workouts alternate A and B on
+   the given session days, with each lift's own increment and increase frequency. Returns, per lift,
+   the weight it was last lifted at on or before each target date. */
+function forecast(st, sessions, targets) {
   const sim = {};
   for (const id in st.lifts) {
     const l = st.lifts[id];
     sim[id] = { w: l.w, inc: l.inc, every: l.every || 1, streak: l.streak || 0 };
   }
   const out = {};
+  const lifted = {};
   for (const id in sim) out[id] = [];
   let type = st.next;
-  for (let wk = 0; wk < weeks; wk++) {
-    const top = {};
-    for (let n = 0; n < perWeek; n++) {
+  let n = 0;
+  for (const target of targets) {
+    for (; n < sessions.length && sessions[n] <= target; n++) {
       for (const id of WORKOUTS[type]) {
         const l = sim[id];
         if (!l) continue;
-        top[id] = Math.max(top[id] || 0, l.w);
+        lifted[id] = l.w;
         if (l.streak + 1 >= l.every) { l.w += l.inc; l.streak = 0; } else l.streak += 1;
       }
       type = type === 'A' ? 'B' : 'A';
     }
-    for (const id in sim) out[id].push(top[id] !== undefined ? top[id] : (out[id][wk - 1] || sim[id].w));
+    for (const id in sim) out[id].push(lifted[id] !== undefined ? lifted[id] : sim[id].w);
   }
   return out;
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, decideSync, mergeStates, forecast, UNITS };
+  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, decideSync, mergeStates, forecast, forecastPlan, UNITS };
 }
 
 /* ---------- App ---------- */
@@ -218,6 +246,8 @@ if (typeof document !== 'undefined') (() => {
   let wakeLock = null;
   /* A copy of the finished workout being edited in History; changes apply only when saved. */
   let draft = null;
+  /* Which workout's exercises the Settings screen is showing. */
+  let settingsGroup = state.next;
   /* Set when a new version of the app has been downloaded; the page reloads at the next safe moment. */
   let updateReady = false;
 
@@ -475,9 +505,10 @@ if (typeof document !== 'undefined') (() => {
     const rows = WORKOUTS[type].map((id) => {
       const l = state.lifts[id];
       const badge = l.fails ? `<span class="badge">missed ${l.fails}/${FAILS_BEFORE_DELOAD}</span>`
-        : l.every > 1 && l.streak ? `<span class="badge ok">${l.streak}/${l.every} to increase</span>`
-        : LIFTS[id].opt ? '<span class="badge">optional</span>' : '';
-      return `<li><span>${LIFTS[id].name}${badge}</span><span class="sr">${LIFTS[id].sets}×${repsFor(id)}</span><strong>${fmt(l.w)}</strong></li>`;
+        : l.every > 1 && l.streak ? `<span class="badge ok">${l.streak}/${l.every} to increase</span>` : '';
+      const head = inSuperset(id) && id === WORKOUTS[type].find(inSuperset)
+        ? '<li class="group-head">Superset · optional</li>' : '';
+      return `${head}<li${inSuperset(id) ? ' class="ss"' : ''}><span>${LIFTS[id].name}${badge}</span><span class="sr">${LIFTS[id].sets}×${repsFor(id)}</span><strong>${fmt(l.w)}</strong></li>`;
     }).join('');
     const done = flash ? `<section class="card"><h2>Workout logged</h2><ul class="rules">${flash.map((n) => `<li>${n}</li>`).join('')}</ul></section>` : '';
     return `<h1>Next up</h1>${done}
@@ -500,6 +531,7 @@ if (typeof document !== 'undefined') (() => {
   function activeView() {
     const a = state.active;
     const cards = a.ex.map((ex, i) => {
+      if (inSuperset(ex.id)) return '';
       const reps = repsFor(ex.id);
       const side = LIFTS[ex.id].db ? `${fmt(ex.w)} per dumbbell` : sideText(ex.w);
       const sets = ex.sets.map((s, j) => {
@@ -510,10 +542,9 @@ if (typeof document !== 'undefined') (() => {
       const warmHtml = warm.length ? `<details><summary>Warm-up sets</summary><ul class="warm">${
         warm.map((w) => `<li><span>${w.reps} reps</span><span>${sideText(w.w)}</span><span>${fmt(w.w)}</span></li>`).join('')
       }</ul></details>` : '';
-      const optTag = LIFTS[ex.id].opt ? ' · optional' : '';
       return `<section class="card">
         <div class="row">
-          <div><h2>${LIFTS[ex.id].name}</h2><p class="muted small">${ex.sets.length}×${reps}${optTag}</p></div>
+          <div><h2>${LIFTS[ex.id].name}</h2><p class="muted small">${ex.sets.length}×${reps}</p></div>
           <div class="stepper">
             <button data-act="w-" data-e="${i}" aria-label="Less weight">−</button>
             <span class="val">${fmt(ex.w)}</span>
@@ -528,9 +559,41 @@ if (typeof document !== 'undefined') (() => {
     return `<div class="row"><h1>Workout ${a.type}</h1><span class="muted" id="elapsed"></span></div>
       <p class="hint" style="margin-top:-8px">Tap a set when you finish it. Tap again for each rep you missed.</p>
       ${cards}
+      ${supersetCard(a)}
       <button class="primary" data-act="finish">Finish workout</button>
       <button class="link danger" data-act="discard" style="display:block;margin:16px auto 0">Discard workout</button>
       ${recentHtml()}`;
+  }
+
+  function supersetCard(a) {
+    const items = a.ex.map((ex, i) => ({ ex, i })).filter(({ ex }) => inSuperset(ex.id));
+    if (!items.length) return '';
+    const rounds = Math.max(...items.map(({ ex }) => ex.sets.length));
+    const done = Math.min(...items.map(({ ex }) => ex.sets.filter((v) => v !== null).length));
+    const status = done >= rounds ? 'All rounds done' : `Round ${done + 1} of ${rounds}`;
+    const rows = items.map(({ ex, i }) => {
+      const reps = repsFor(ex.id);
+      const sets = ex.sets.map((v, j) => {
+        const cls = v === null ? '' : v === reps ? ' done' : ' miss';
+        return `<button class="set${cls}" data-act="set" data-e="${i}" data-s="${j}">${v === null ? reps : v}</button>`;
+      }).join('');
+      return `<div class="ss-ex">
+        <div class="row">
+          <div><strong>${LIFTS[ex.id].name}</strong><p class="muted small">${ex.sets.length}×${reps} · per dumbbell</p></div>
+          <div class="stepper">
+            <button data-act="w-" data-e="${i}" aria-label="Less weight">−</button>
+            <span class="val">${fmt(ex.w)}</span>
+            <button data-act="w+" data-e="${i}" aria-label="More weight">+</button>
+          </div>
+        </div>
+        <div class="sets">${sets}</div>
+      </div>`;
+    }).join('');
+    return `<section class="card">
+      <div class="row"><h2>Superset</h2><span class="muted small">${status}</span></div>
+      <p class="muted small" style="margin-top:4px">Optional. Do one set of each, back to back, then rest ${clock(SUPERSET_REST)}. ${rounds} rounds. Tap a set to log the round for all three; tap an exercise again for reps it missed.</p>
+      ${rows}
+    </section>`;
   }
 
   function histCard(h, extra) {
@@ -611,13 +674,16 @@ if (typeof document !== 'undefined') (() => {
   }
 
   const FORECAST_WEEKS = 4;
-  const WEEK_MS = 7 * 86400000;
+  const shortDate = (d) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
   function progressView() {
     const chips = Object.keys(LIFTS).map((id) =>
       `<button class="chip${id === chartLift ? ' on' : ''}" data-act="chart" data-id="${id}">${LIFTS[id].name}</button>`).join('');
-    const ahead = forecast(state, FORECAST_WEEKS);
     const now = Date.now();
+    const lastLogged = state.history.length ? state.history[state.history.length - 1].date : null;
+    const plan = forecastPlan(now, lastLogged, FORECAST_WEEKS);
+    const ahead = forecast(state, plan.sessions, plan.fridays);
+    const endDate = shortDate(plan.fridays[FORECAST_WEEKS - 1]);
 
     /* Logged sessions for the selected lift, then the forecast one week apart from today. */
     const logged = [];
@@ -625,7 +691,7 @@ if (typeof document !== 'undefined') (() => {
       const ex = h.ex.find((e) => e.id === chartLift && e.sets.some((s) => s !== null));
       if (ex) logged.push({ t: new Date(h.date).getTime(), w: convert(ex.w, h.unit, state.unit) });
     });
-    const projected = ahead[chartLift].map((w, k) => ({ t: now + (k + 1) * WEEK_MS, w }));
+    const projected = ahead[chartLift].map((w, k) => ({ t: plan.fridays[k].getTime(), w }));
     const start = logged.length ? logged[logged.length - 1] : { t: now, w: state.lifts[chartLift].w };
     const all = [...logged, start, ...projected];
 
@@ -647,14 +713,14 @@ if (typeof document !== 'undefined') (() => {
     const stats = logged.length ? `<div class="stats">
         <div><b>${fmt(logged[0].w)}</b><span>First</span></div>
         <div><b>${fmt(Math.max(...logged.map((p) => p.w)))}</b><span>Best</span></div>
-        <div><b>${fmt(last.w)}</b><span>In ${FORECAST_WEEKS} weeks</span></div>
+        <div><b>${fmt(last.w)}</b><span>By ${endDate}</span></div>
       </div>` : '<p class="hint">No workouts with this lift logged yet. The forecast starts from your working weight.</p>';
 
     const cur = state.lifts[chartLift].w;
     const weeks = ahead[chartLift].map((w, k) => {
-      const d = new Date(now + (k + 1) * WEEK_MS).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      const d = `Fri ${shortDate(plan.fridays[k])}`;
       const up = w - cur;
-      return `<li><span>Week ${k + 1} <span class="muted small">· by ${d}</span></span><span class="muted small">${up > 0 ? `+${fmt(up)}` : 'same'}</span><strong>${fmt(w)}</strong></li>`;
+      return `<li><span>${d}</span><span class="muted small">${up > 0 ? `+${fmt(up)}` : 'same'}</span><strong>${fmt(w)}</strong></li>`;
     }).join('');
 
     const order = Object.keys(LIFTS).sort((a, b) => !!LIFTS[a].opt - !!LIFTS[b].opt);
@@ -668,23 +734,25 @@ if (typeof document !== 'undefined') (() => {
       <section class="card"><h2>${LIFTS[chartLift].name} forecast</h2>
         <ul class="plan">${weeks}</ul>
       </section>
-      <section class="card"><h2>All lifts in ${FORECAST_WEEKS} weeks</h2>
+      <section class="card"><h2>All lifts by Fri ${endDate}</h2>
         <ul class="plan">${table}</ul>
       </section>
-      <p class="hint">Each week shows the heaviest weight you'd lift that week. Forecasts assume you hit every rep and train 3 times a week, alternating A and B, using each lift's increment and frequency from Settings. Missed reps or skipped workouts push them back.</p>
+      <p class="hint">Each date is the Friday of one of the next ${FORECAST_WEEKS} weeks, showing the weight you'd lift by then. Forecasts assume you train Monday, Wednesday and Friday, hit every rep and alternate A and B, using each lift's increment and frequency from Settings. Missed reps or skipped workouts push them back.</p>
       <p class="hint">${state.history.length} workout${state.history.length === 1 ? '' : 's'} logged.</p>`;
   }
 
 
   function settingsView() {
     const u = UNITS[state.unit];
-    const lifts = Object.keys(LIFTS).map((id) => {
+    const liftRow = (id) => {
       const l = state.lifts[id];
+      const other = settingsGroup === 'A' ? 'B' : 'A';
+      const shared = WORKOUTS[other].includes(id) ? `<span class="muted small"> · also in ${other}</span>` : '';
       const opts = u.incs.map((v) => `<option value="${v}"${v === l.inc ? ' selected' : ''}>+${fmt(v)}</option>`).join('');
       const freqs = EVERY_OPTIONS.map((n) =>
         `<option value="${n}"${n === l.every ? ' selected' : ''}>${n === 1 ? 'Every workout' : `Every ${n} workouts`}</option>`).join('');
       return `<div class="lift-set">
-        <div class="row"><span>${LIFTS[id].name}</span>
+        <div class="row"><span>${LIFTS[id].name}${shared}</span>
           <div class="stepper">
             <button data-act="l-" data-id="${id}" aria-label="Less weight">−</button>
             <span class="val">${fmt(l.w)}</span>
@@ -694,7 +762,10 @@ if (typeof document !== 'undefined') (() => {
         <div class="sub"><span>Weight to add</span><select data-inc="${id}">${opts}</select></div>
         <div class="sub"><span>Add it after</span><select data-every="${id}">${freqs}</select></div>
       </div>`;
-    }).join('');
+    };
+    const ids = WORKOUTS[settingsGroup];
+    const lifts = `<div class="group"><h3 class="sub-h">Main lifts</h3>${ids.filter((id) => !inSuperset(id)).map(liftRow).join('')}</div>
+      <div class="group"><h3 class="sub-h">Superset · dumbbells</h3>${ids.filter(inSuperset).map(liftRow).join('')}</div>`;
     const bars = u.bars.map((v) => `<option value="${v}"${v === state.bar ? ' selected' : ''}>${fmt(v)}</option>`).join('');
     return `<h1>Settings</h1>
       <section class="card">
@@ -704,13 +775,20 @@ if (typeof document !== 'undefined') (() => {
         </div></div>
         <div class="field"><span>Bar weight</span><select id="bar">${bars}</select></div>
       </section>
-      <section class="card"><h2>Working weights</h2><p class="muted small" style="margin:4px 0 8px">Your weight for the next workout of each lift, how much to add, and how many successful workouts in a row it takes.</p>${lifts}</section>
+      <section class="card">
+        <div class="row"><h2>Exercises</h2><div class="seg">
+          <button data-act="sgroup" data-g="A" class="${settingsGroup === 'A' ? 'on' : ''}">Workout A</button>
+          <button data-act="sgroup" data-g="B" class="${settingsGroup === 'B' ? 'on' : ''}">Workout B</button>
+        </div></div>
+        <p class="muted small" style="margin:6px 0 4px">Next weight for each exercise, how much to add, and how many successful workouts in a row it takes. Squat is in both workouts; changing it here changes it for both.</p>
+        ${lifts}
+      </section>
       <section class="card"><h2>How the program works</h2>
         <ul class="rules">
           <li>Workout A: Squat, Bench Press, Barbell Row. Workout B: Squat, Overhead Press, Deadlift.</li>
           <li>Alternate A and B, three days a week, with a rest day between.</li>
           <li>Five sets of five reps at the same weight. Deadlift is one set of five.</li>
-          <li>Optional dumbbell accessories after the main lifts, three sets of ten. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Shrug. Skip them freely.</li>
+          <li>After the main lifts, an optional dumbbell superset: one set of ten of each exercise back to back, rest ${clock(SUPERSET_REST)}, three rounds. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Shrug.</li>
           <li>Hit every rep and the weight goes up next time, or after the number of successful workouts in a row you set above.</li>
           <li>Miss reps and you repeat the weight. Miss ${FAILS_BEFORE_DELOAD} workouts in a row and it drops 10%.</li>
           <li>Rest 1:30 if the last set felt easy, 3:00 if it was hard, 5:00 if you missed reps.</li>
@@ -733,7 +811,7 @@ if (typeof document !== 'undefined') (() => {
     if (a && el) el.textContent = clock((Date.now() - a.started) / 1000);
     if (!a || !a.rest || tab !== 'workout') { restEl.hidden = true; return; }
     const sec = (Date.now() - a.rest.start) / 1000;
-    const marks = a.rest.failed ? [300] : [90, 180];
+    const marks = a.rest.superset ? [SUPERSET_REST] : a.rest.failed ? [300] : [90, 180];
     marks.forEach((m) => {
       if (sec >= m && !a.rest.beeped.includes(m)) {
         a.rest.beeped.push(m);
@@ -742,7 +820,9 @@ if (typeof document !== 'undefined') (() => {
       }
     });
     const ready = sec >= marks[0];
-    const msg = a.rest.failed
+    const msg = a.rest.superset
+      ? `Round done. Rest ${clock(SUPERSET_REST)}, then start the next round.`
+      : a.rest.failed
       ? 'Missed reps. Rest up to 5:00 before the next set.'
       : 'Felt easy? Go at 1:30. Hard? Wait until 3:00.';
     restEl.hidden = false;
@@ -771,8 +851,28 @@ if (typeof document !== 'undefined') (() => {
     const cur = a.ex[e].sets[s];
     const next = cur === null ? reps : cur === 0 ? null : cur - 1;
     a.ex[e].sets[s] = next;
+    /* In a superset, logging a set logs that round for every exercise in it at their full reps.
+       Tapping again adjusts only the exercise tapped, for reps it missed. */
+    if (inSuperset(a.ex[e].id) && cur === null) {
+      a.ex.forEach((ex) => {
+        if (inSuperset(ex.id) && s < ex.sets.length && ex.sets[s] === null) ex.sets[s] = repsFor(ex.id);
+      });
+    }
     const allDone = a.ex.every((ex) => ex.sets.every((v) => v !== null));
-    a.rest = next === null || allDone ? null : { start: cur === null ? Date.now() : (a.rest ? a.rest.start : Date.now()), failed: next < reps, beeped: [] };
+    const keepStart = cur !== null && a.rest ? a.rest.start : Date.now();
+    if (next === null || allDone) {
+      a.rest = null;
+    } else if (inSuperset(a.ex[e].id)) {
+      /* No rest between exercises in a superset; rest once every exercise has done this round.
+         Correcting the reps of a set already logged leaves the timer as it is. */
+      if (cur !== null) return;
+      const round = a.ex.filter((ex) => inSuperset(ex.id) && s < ex.sets.length);
+      a.rest = round.every((ex) => ex.sets[s] !== null)
+        ? { start: keepStart, superset: true, failed: false, beeped: [] }
+        : null;
+    } else {
+      a.rest = { start: keepStart, failed: next < reps, beeped: [] };
+    }
   }
 
   function finishWorkout() {
@@ -912,6 +1012,7 @@ if (typeof document !== 'undefined') (() => {
         state.deleted = [...(state.deleted || []), Number(d.id)];
         break;
       case 'chart': chartLift = d.id; break;
+      case 'sgroup': settingsGroup = d.g; render(); return;
       case 'unit': setUnit(d.u); break;
       case 'gh-connect': connect(document.getElementById('token').value); return;
       case 'gh-sync': syncNow(); return;
