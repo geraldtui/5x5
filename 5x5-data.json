@@ -4,7 +4,7 @@
   "bar": 20,
   "lifts": {
     "squat": {
-      "w": 62.5,
+      "w": 65,
       "inc": 2.5,
       "fails": 0,
       "every": 1,
@@ -25,25 +25,25 @@
       "streak": 0
     },
     "ohp": {
-      "w": 27.5,
+      "w": 30,
       "inc": 2.5,
       "fails": 0,
       "every": 1,
       "streak": 0
     },
     "deadlift": {
-      "w": 55,
+      "w": 60,
       "inc": 5,
       "fails": 0,
       "every": 1,
       "streak": 0
     },
     "dbrow": {
-      "w": 22.5,
+      "w": 20,
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 0
+      "streak": 1
     },
     "dbcurl": {
       "w": 10,
@@ -57,7 +57,7 @@
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 0
+      "streak": 1
     },
     "dbtri": {
       "w": 15,
@@ -78,10 +78,10 @@
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 0
+      "streak": 1
     }
   },
-  "next": "B",
+  "next": "A",
   "history": [
     {
       "id": 1762028640000,
@@ -553,8 +553,73 @@
           ]
         }
       ]
+    },
+    {
+      "id": 1795019449611,
+      "date": "2026-11-18T16:30:49.611Z",
+      "type": "B",
+      "unit": "kg",
+      "mins": 70,
+      "ex": [
+        {
+          "id": "squat",
+          "w": 62.5,
+          "sets": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "id": "ohp",
+          "w": 27.5,
+          "sets": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "id": "deadlift",
+          "w": 55,
+          "sets": [
+            5
+          ]
+        },
+        {
+          "id": "dbrow",
+          "w": 20,
+          "sets": [
+            10,
+            10,
+            10
+          ]
+        },
+        {
+          "id": "dbfly",
+          "w": 10,
+          "sets": [
+            10,
+            10,
+            10
+          ]
+        },
+        {
+          "id": "dbshrug",
+          "w": 22.5,
+          "sets": [
+            10,
+            10,
+            10
+          ]
+        }
+      ]
     }
   ],
   "active": null,
-  "updated": 1794848740994
+  "updated": 1795021247326
 }
