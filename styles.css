@@ -227,3 +227,19 @@ select {
 .lift-set .sub { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; color: var(--muted); font-size: 14px; }
 .rules { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
 .rules li { margin: 5px 0; }
+
+/* GitHub sync */
+.token {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 12px;
+  font: inherit;
+  color: var(--text);
+  background: var(--line);
+  border: 0;
+  border-radius: 10px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.card a { color: var(--accent); }

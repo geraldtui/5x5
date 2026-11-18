@@ -132,11 +132,12 @@ function applyProgression(st, workout) {
   return notes;
 }
 
-/* Decides whether the device should replace its data with the repository's copy.
-   It compares which workouts each side knows about (logged or deleted), so a device that is
-   missing workouts always catches up, and one with unpushed workouts keeps them. Only when both
-   know the same workouts, or both have some the other lacks, does the later save win. */
-function shouldTakeRepo(device, repo) {
+/* Decides how a device's data and the repository's copy should be reconciled:
+   'pull' (take the repository's), 'push' (send the device's), 'merge' (each has workouts the other
+   lacks) or 'none'. It compares which workouts each side has logged or deleted, so a device that is
+   missing workouts always catches up and one with unsent workouts keeps them. Only when both know
+   the same workouts does the later save win, which covers settings changes and edits. */
+function decideSync(device, repo) {
   /* `a` has news for `b` if it logged a workout `b` has never seen, or deleted one `b` still has. */
   const hasNewsFor = (a, b) => {
     const bLogged = new Set(b.history.map((h) => h.id));
@@ -144,16 +145,31 @@ function shouldTakeRepo(device, repo) {
     return a.history.some((h) => !bLogged.has(h.id) && !bDeleted.has(h.id))
       || (a.deleted || []).some((id) => bLogged.has(id));
   };
-  const repoHasNew = hasNewsFor(repo, device);
-  const deviceHasNew = hasNewsFor(device, repo);
-  if (repoHasNew && !deviceHasNew) return true;
-  if (deviceHasNew && !repoHasNew) return false;
-  if (!device.updated && !device.history.length) return repo.history.length > 0;
-  return (repo.updated || 0) > (device.updated || 0);
+  const repoNew = hasNewsFor(repo, device);
+  const deviceNew = hasNewsFor(device, repo);
+  if (repoNew && deviceNew) return 'merge';
+  if (repoNew) return 'pull';
+  if (deviceNew) return 'push';
+  const d = device.updated || 0;
+  const r = repo.updated || 0;
+  return r > d ? 'pull' : d > r ? 'push' : 'none';
+}
+
+/* Combines two copies that each have workouts the other lacks: every workout from both, minus any
+   either side deleted, in date order. Settings and working weights come from the copy saved last. */
+function mergeStates(device, repo, now = Date.now()) {
+  const base = (device.updated || 0) >= (repo.updated || 0) ? device : repo;
+  const other = base === device ? repo : device;
+  const deleted = [...new Set([...(device.deleted || []), ...(repo.deleted || [])])];
+  const gone = new Set(deleted);
+  const byId = new Map();
+  for (const h of [...other.history, ...base.history]) if (!gone.has(h.id)) byId.set(h.id, h);
+  const history = [...byId.values()].sort((a, b) => new Date(a.date) - new Date(b.date));
+  return { ...base, history, deleted, active: null, updated: now };
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, shouldTakeRepo, UNITS };
+  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, decideSync, mergeStates, UNITS };
 }
 
 /* ---------- App ---------- */
@@ -198,12 +214,116 @@ if (typeof document !== 'undefined') (() => {
   function save(stamp = true) {
     if (stamp) state.updated = Date.now();
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* storage unavailable */ }
+    if (stamp) scheduleSync();
   }
   const validBackup = (d) => d && d.v === 1 && d.lifts && Array.isArray(d.history) && UNITS[d.unit];
 
-  /* The repository's backup file is the default data. Take it when this device has nothing yet,
-     or when the file was saved more recently than anything done here. Never mid-workout. */
-  async function syncFromRepo() {
+  /* ----- Sync -----
+     With a GitHub token, the app reads and writes DATA_FILE in the repository through GitHub's API,
+     so every device shares one copy. The token lives only in this device's storage, never in the
+     data or the code. Without a token the app still reads the published file, but cannot write it. */
+
+  const REPO = 'geraldtui/5x5';
+  const BRANCH = 'main';
+  const API = `https://api.github.com/repos/${REPO}/contents/${DATA_FILE}`;
+  const TOKEN_KEY = 'fivebyfive.githubToken';
+  const SYNCED_KEY = 'fivebyfive.lastSynced';
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: (k, v) => { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* storage unavailable */ } },
+  };
+  let token = store.get(TOKEN_KEY);
+  const sync = { busy: false, again: false, error: null, at: Number(store.get(SYNCED_KEY)) || 0, timer: null };
+
+  const toB64 = (str) => {
+    let bin = '';
+    new TextEncoder().encode(str).forEach((b) => { bin += String.fromCharCode(b); });
+    return btoa(bin);
+  };
+  const fromB64 = (b64) => new TextDecoder().decode(Uint8Array.from(atob(b64.replace(/\s/g, '')), (c) => c.charCodeAt(0)));
+  const ghHeaders = () => ({ Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' });
+
+  function ghFailure(res) {
+    if (res.status === 401) return new Error('GitHub rejected the token. It may have expired or been revoked; disconnect and connect a new one.');
+    if (res.status === 403) return new Error(`The token can't write to ${REPO}. It needs Contents: Read and write on that repository.`);
+    return new Error(`GitHub returned an error (${res.status}). Try Sync now in a minute.`);
+  }
+  async function ghRead() {
+    const res = await fetch(`${API}?ref=${BRANCH}&t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
+    if (res.status === 404) return { data: null, sha: null };
+    if (!res.ok) throw ghFailure(res);
+    const body = await res.json();
+    return { data: JSON.parse(fromB64(body.content)), sha: body.sha };
+  }
+  /* Returns false when the file changed on GitHub since it was read, so the caller can re-read and retry. */
+  async function ghWrite(data, sha) {
+    const res = await fetch(API, {
+      method: 'PUT',
+      headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Update workout data from the app',
+        content: toB64(`${JSON.stringify({ ...data, active: null }, null, 2)}\n`),
+        branch: BRANCH,
+        ...(sha ? { sha } : {}),
+      }),
+    });
+    if (res.status === 409 || res.status === 422) return false;
+    if (!res.ok) throw ghFailure(res);
+    return true;
+  }
+
+  function adopt(data) {
+    state = fillLifts(data);
+    flash = null;
+    save(false);
+    render();
+  }
+  function scheduleSync(ms = 1500) {
+    if (!token) return;
+    clearTimeout(sync.timer);
+    sync.timer = setTimeout(syncNow, ms);
+  }
+  function showSync() {
+    if (tab === 'settings' || (tab === 'workout' && !state.active)) render();
+  }
+
+  /* Never mid-workout or mid-edit: finishing or saving triggers a sync straight after. */
+  async function syncNow() {
+    if (state.active || draft) return;
+    if (!token) { readPublished(); return; }
+    if (sync.busy) { sync.again = true; return; }
+    sync.busy = true;
+    sync.error = null;
+    showSync();
+    try {
+      for (let attempt = 1; ; attempt++) {
+        const startedAt = state.updated;
+        const { data, sha } = await ghRead();
+        /* The user changed something while this was in flight; start over with the new data. */
+        if (state.active || draft || state.updated !== startedAt) { sync.again = !state.active && !draft; break; }
+        const remote = validBackup(data) ? data : null;
+        const action = remote ? decideSync(state, remote) : 'push';
+        if (action === 'pull') { adopt(remote); break; }
+        if (action === 'none') break;
+        const out = action === 'merge' ? mergeStates(state, remote) : state;
+        if (await ghWrite(out, sha)) {
+          if (action === 'merge') adopt(out);
+          break;
+        }
+        if (attempt === 3) throw new Error('The data on GitHub kept changing while saving. Tap Sync now to try again.');
+      }
+      sync.at = Date.now();
+      store.set(SYNCED_KEY, String(sync.at));
+    } catch (e) {
+      sync.error = e instanceof TypeError ? 'Offline. Changes are kept on this device and sync when you are back online.' : e.message;
+    }
+    sync.busy = false;
+    showSync();
+    if (sync.again) { sync.again = false; syncNow(); }
+  }
+
+  /* Without a token: read the published file and take it (or merge it) when it has something new. */
+  async function readPublished() {
     let data;
     try {
       const res = await fetch(`${DATA_FILE}?t=${Date.now()}`, { cache: 'no-store' });
@@ -211,12 +331,57 @@ if (typeof document !== 'undefined') (() => {
       data = await res.json();
     } catch (e) { return; /* offline or no file: keep what is on the device */ }
     if (!validBackup(data) || state.active || draft) return;
-    if (shouldTakeRepo(state, data)) {
-      state = fillLifts(data);
-      flash = null;
-      save(false);
-      render();
+    const action = decideSync(state, data);
+    if (action === 'pull') adopt(data);
+    else if (action === 'merge') adopt(mergeStates(state, data));
+  }
+
+  function connect(value) {
+    const t = value.trim();
+    if (!/^(github_pat_|ghp_)\w+$/.test(t)) { alert('That does not look like a GitHub token. It should start with github_pat_.'); return; }
+    token = t;
+    store.set(TOKEN_KEY, t);
+    sync.error = null;
+    syncNow();
+  }
+  function disconnect() {
+    if (!confirm('Stop syncing this device with GitHub? Your data stays on this device and on GitHub.')) return;
+    token = null;
+    store.set(TOKEN_KEY, null);
+    sync.error = null;
+  }
+  function agoText(t) {
+    const s = Math.round((Date.now() - t) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+    return dateStr(new Date(t).toISOString());
+  }
+  function syncCard() {
+    if (!token) {
+      return `<section class="card"><h2>Sync with GitHub</h2>
+        <p class="muted small" style="margin:6px 0 0">Save your data to github.com/${REPO} automatically, so your phone and any browser show the same workouts.</p>
+        <input id="token" class="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste a GitHub token">
+        <button class="primary" data-act="gh-connect" style="margin-top:10px">Connect</button>
+        <details><summary>How to get a token</summary>
+          <ol class="rules">
+            <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>.</li>
+            <li>Under Repository access, choose Only select repositories, then ${REPO}.</li>
+            <li>Under Permissions, set Contents to Read and write.</li>
+            <li>Generate the token, copy it and paste it above. Do this once on each device.</li>
+          </ol>
+        </details>
+      </section>`;
     }
+    const status = sync.busy ? 'Syncing…' : sync.error || (sync.at ? `Last synced ${agoText(sync.at)}` : 'Not synced yet');
+    return `<section class="card"><h2>Sync with GitHub</h2>
+      <p class="muted small" style="margin:6px 0 8px">Connected to github.com/${REPO}. Changes save there automatically.</p>
+      <p class="small${sync.error ? ' danger' : ''}">${status}</p>
+      <div class="row" style="margin-top:6px">
+        <button class="link" data-act="gh-sync">Sync now</button>
+        <button class="link danger" data-act="gh-disconnect">Disconnect</button>
+      </div>
+    </section>`;
   }
 
   const fmt = (w, unit) => `${num(w)}${unit || state.unit}`;
@@ -294,6 +459,7 @@ if (typeof document !== 'undefined') (() => {
         <button class="primary" data-act="start">Start workout</button>
       </section>
       <p class="hint">${lastLine}</p>
+      ${token && sync.error ? `<p class="hint danger">Sync problem: ${sync.error} See Settings.</p>` : ''}
       ${recentHtml()}`;
   }
 
@@ -492,10 +658,13 @@ if (typeof document !== 'undefined') (() => {
           <li>Rest 1:30 if the last set felt easy, 3:00 if it was hard, 5:00 if you missed reps.</li>
         </ul>
       </section>
+      ${syncCard()}
       <button class="secondary" data-act="export">Back up data</button>
       <button class="secondary" data-act="import">Restore from backup</button>
       <button class="secondary danger" data-act="reset">Erase everything</button>
-      <p class="hint">Workouts are saved on this device. After a workout, back up and push ${DATA_FILE} to the repository; the app loads that file whenever it is newer than what is on the device.</p>`;
+      <p class="hint">${token
+        ? 'Workouts are saved on this device and synced to GitHub. Backups are optional.'
+        : `Workouts are saved on this device. Connect GitHub above to sync them, or back up and push ${DATA_FILE} by hand.`}</p>`;
   }
 
   /* ----- Rest timer and elapsed clock ----- */
@@ -686,10 +855,15 @@ if (typeof document !== 'undefined') (() => {
         break;
       case 'chart': chartLift = d.id; break;
       case 'unit': setUnit(d.u); break;
+      case 'gh-connect': connect(document.getElementById('token').value); return;
+      case 'gh-sync': syncNow(); return;
+      case 'gh-disconnect': disconnect(); render(); return;
       case 'export': exportData(); return;
       case 'import': importFile.click(); return;
       case 'reset':
-        if (!confirm('Erase all workouts and settings on this device? This cannot be undone.')) return;
+        if (!confirm(token
+          ? 'Erase all workouts and settings on this device? Your data on GitHub is kept and will load again.'
+          : 'Erase all workouts and settings on this device? This cannot be undone.')) return;
         state = freshState(state.unit);
         flash = null;
         break;
@@ -705,8 +879,9 @@ if (typeof document !== 'undefined') (() => {
     maybeReload();
     if (state.active) keepAwake(true);
     tick();
-    syncFromRepo();
+    syncNow();
   });
+  window.addEventListener('online', () => syncNow());
 
   /* ----- App updates ----- */
 
@@ -737,5 +912,5 @@ if (typeof document !== 'undefined') (() => {
   try { localStorage.removeItem('fivebyfive.unlocked'); } catch (e) { /* storage unavailable */ }
   if (state.active) keepAwake(true);
   render();
-  syncFromRepo();
+  syncNow();
 })();
