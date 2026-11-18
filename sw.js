@@ -1,6 +1,6 @@
 // Bump this on every change to the app's files: a changed sw.js is what makes installed copies update.
 // Pushing only 5x5-data.json needs no bump.
-const CACHE = '5x5-v12';
+const CACHE = '5x5-v13';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {

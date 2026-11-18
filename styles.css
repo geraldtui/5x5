@@ -267,3 +267,19 @@ select {
 .group .lift-set:first-of-type { border-top: 0; padding-top: 4px; }
 .sub-h { margin: 18px 0 2px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .seg button { padding: 7px 12px; font-size: 14px; }
+
+/* Suggested dumbbell */
+.suggest {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--good);
+  background: rgba(76, 195, 138, 0.12);
+  border: 1px solid rgba(76, 195, 138, 0.35);
+}
+.suggest.on { color: var(--muted); background: transparent; border-color: var(--line); font-weight: 500; }

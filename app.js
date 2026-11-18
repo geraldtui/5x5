@@ -2,18 +2,23 @@
 
 /* ---------- Program definition ---------- */
 
+/* Dumbbell work tracks progress by reps: the reps per set climb through this range, one at a time.
+   The weight never changes on its own. After the top of the range, the workout suggests the next
+   dumbbell up, and switching to it starts the reps again at the bottom. */
+const REP_RANGE = [8, 12];
+
 const LIFTS = {
   squat: { name: 'Squat', sets: 5 },
   bench: { name: 'Bench Press', sets: 5 },
   row: { name: 'Barbell Row', sets: 5 },
   ohp: { name: 'Overhead Press', sets: 5 },
   deadlift: { name: 'Deadlift', sets: 1 },
-  dbrow: { name: 'Dumbbell Row', sets: 3, reps: 10, db: true, opt: true },
-  dbcurl: { name: 'Dumbbell Curl', sets: 3, reps: 10, db: true, opt: true },
-  dbshrug: { name: 'Dumbbell Shrug', sets: 3, reps: 10, db: true, opt: true },
-  dbtri: { name: 'Dumbbell Triceps Extension', sets: 3, reps: 10, db: true, opt: true },
-  dblat: { name: 'Dumbbell Lateral Raise', sets: 3, reps: 10, db: true, opt: true },
-  dbfly: { name: 'Dumbbell Reverse Fly', sets: 3, reps: 10, db: true, opt: true },
+  dbrow: { name: 'Dumbbell Row', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
+  dbcurl: { name: 'Dumbbell Curl', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
+  dbshrug: { name: 'Dumbbell Shrug', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
+  dbtri: { name: 'Dumbbell Triceps Extension', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
+  dblat: { name: 'Dumbbell Lateral Raise', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
+  dbfly: { name: 'Dumbbell Reverse Fly', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
 };
 /* Optional accessories fill in what each day's main lifts miss: arms and shoulders on A, upper-back pulling on B. */
 const WORKOUTS = {
@@ -22,6 +27,30 @@ const WORKOUTS = {
 };
 const REPS = 5;
 const repsFor = (id) => LIFTS[id].reps || REPS;
+const hasRange = (id) => !!LIFTS[id].range;
+/* The reps aimed for in a logged or in-progress exercise. Older records without one used the default. */
+const targetOf = (ex) => ex.reps || repsFor(ex.id);
+/* The reps per set the next workout will aim for. */
+const liftTarget = (st, id) => (hasRange(id) ? dumbbellPlan(st, id).reps : repsFor(id));
+
+/* Works out a dumbbell exercise's next session from its most recent logged one, so edits and
+   deletions in History are reflected straight away. Same weight; one more rep per set if every set
+   hit the target, up to the top of the range; once the top is hit, a heavier dumbbell is suggested
+   (one step up). With nothing logged yet it starts from the working weight at the default reps. */
+function dumbbellPlan(st, id) {
+  const [lo, hi] = LIFTS[id].range;
+  for (let i = st.history.length - 1; i >= 0; i--) {
+    const h = st.history[i];
+    const ex = h.ex.find((e) => e.id === id && e.sets.some((v) => v !== null));
+    if (!ex) continue;
+    const w = convert(ex.w, h.unit, st.unit);
+    const target = Math.min(hi, Math.max(lo, targetOf(ex)));
+    const done = ex.sets.every((v) => v !== null && v >= target);
+    if (done && target >= hi) return { w, reps: hi, suggest: w + UNITS[st.unit].step, last: { w, sets: ex.sets } };
+    return { w, reps: done ? target + 1 : target, last: { w, sets: ex.sets } };
+  }
+  return { w: st.lifts[id].w, reps: repsFor(id), last: null };
+}
 /* The optional dumbbell accessories in each workout are done as one superset: a set of each, back to
    back, then a rest, for as many rounds as they have sets. */
 const inSuperset = (id) => !!LIFTS[id].opt;
@@ -62,7 +91,9 @@ const num = (x) => String(Math.round(x * 100) / 100);
 function freshState(unit) {
   const u = UNITS[unit];
   const lifts = {};
-  for (const id in LIFTS) lifts[id] = { w: u.w[id], inc: u.inc[id], every: 1, streak: 0, fails: 0 };
+  for (const id in LIFTS) {
+    lifts[id] = { w: u.w[id], inc: u.inc[id], every: 1, streak: 0, fails: 0 };
+  }
   return { v: 1, unit, bar: u.bar, lifts, next: 'A', history: [], active: null };
 }
 
@@ -105,10 +136,26 @@ function applyProgression(st, workout) {
       notes.push(`${name}: skipped, no change`);
       continue;
     }
+    if (hasRange(ex.id)) {
+      const [lo, hi] = LIFTS[ex.id].range;
+      const target = targetOf(ex);
+      const n = ex.sets.length;
+      lift.w = ex.w;
+      lift.streak = 0;
+      lift.fails = 0;
+      if (ex.sets.every((s) => s !== null && s >= target)) {
+        notes.push(target >= hi
+          ? `${name}: hit ${n}×${hi} at ${num(ex.w)}${st.unit}. Next time the workout suggests ${num(ex.w + UNITS[st.unit].step)}${st.unit}`
+          : `${name}: all reps done, next time ${n}×${Math.min(hi, target + 1)} at ${num(ex.w)}${st.unit}`);
+      } else {
+        notes.push(`${name}: missed reps, repeat ${n}×${target} at ${num(ex.w)}${st.unit}`);
+      }
+      continue;
+    }
     const every = lift.every || 1;
     /* Successes only count toward an increase while the weight stays the same. */
     const streak = ex.w === lift.w ? lift.streak || 0 : 0;
-    if (ex.sets.every((s) => s === repsFor(ex.id))) {
+    if (ex.sets.every((s) => s === targetOf(ex))) {
       lift.fails = 0;
       if (streak + 1 >= every) {
         lift.w = ex.w + lift.inc;
@@ -195,14 +242,19 @@ function forecastPlan(now, lastWorkout, weeks = 4) {
   return { fridays, sessions };
 }
 
-/* Projects each lift's working weight, assuming every rep is hit and workouts alternate A and B on
+/* Projects each lift's working weight, assuming every rep is hit, any suggested dumbbell is taken,
+   and workouts alternate A and B on
    the given session days, with each lift's own increment and increase frequency. Returns, per lift,
    the weight it was last lifted at on or before each target date. */
 function forecast(st, sessions, targets) {
   const sim = {};
   for (const id in st.lifts) {
     const l = st.lifts[id];
-    sim[id] = { w: l.w, inc: l.inc, every: l.every || 1, streak: l.streak || 0 };
+    sim[id] = { w: l.w, inc: l.inc, every: l.every || 1, streak: l.streak || 0, target: null };
+    if (hasRange(id)) {
+      const plan = dumbbellPlan(st, id);
+      sim[id] = { ...sim[id], w: plan.suggest || plan.w, inc: UNITS[st.unit].step, target: plan.suggest ? LIFTS[id].range[0] : plan.reps };
+    }
   }
   const out = {};
   const lifted = {};
@@ -215,7 +267,10 @@ function forecast(st, sessions, targets) {
         const l = sim[id];
         if (!l) continue;
         lifted[id] = l.w;
-        if (l.streak + 1 >= l.every) { l.w += l.inc; l.streak = 0; } else l.streak += 1;
+        if (l.target !== null) {
+          const [lo, hi] = LIFTS[id].range;
+          if (l.target >= hi) { l.w += l.inc; l.target = lo; } else l.target += 1;
+        } else if (l.streak + 1 >= l.every) { l.w += l.inc; l.streak = 0; } else l.streak += 1;
       }
       type = type === 'A' ? 'B' : 'A';
     }
@@ -225,7 +280,7 @@ function forecast(st, sessions, targets) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, decideSync, mergeStates, forecast, forecastPlan, UNITS };
+  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, decideSync, mergeStates, forecast, forecastPlan, dumbbellPlan, UNITS };
 }
 
 /* ---------- App ---------- */
@@ -504,11 +559,13 @@ if (typeof document !== 'undefined') (() => {
     }
     const rows = WORKOUTS[type].map((id) => {
       const l = state.lifts[id];
-      const badge = l.fails ? `<span class="badge">missed ${l.fails}/${FAILS_BEFORE_DELOAD}</span>`
-        : l.every > 1 && l.streak ? `<span class="badge ok">${l.streak}/${l.every} to increase</span>` : '';
+      const plan = hasRange(id) ? dumbbellPlan(state, id) : null;
+      const badge = plan ? (plan.suggest ? `<span class="badge ok">ready for ${fmt(plan.suggest)}</span>` : '')
+        : l.fails ? `<span class="badge">missed ${l.fails}/${FAILS_BEFORE_DELOAD}</span>`
+        : !hasRange(id) && l.every > 1 && l.streak ? `<span class="badge ok">${l.streak}/${l.every} to increase</span>` : '';
       const head = inSuperset(id) && id === WORKOUTS[type].find(inSuperset)
         ? '<li class="group-head">Superset · optional</li>' : '';
-      return `${head}<li${inSuperset(id) ? ' class="ss"' : ''}><span>${LIFTS[id].name}${badge}</span><span class="sr">${LIFTS[id].sets}×${repsFor(id)}</span><strong>${fmt(l.w)}</strong></li>`;
+      return `${head}<li${inSuperset(id) ? ' class="ss"' : ''}><span>${LIFTS[id].name}${badge}</span><span class="sr">${LIFTS[id].sets}×${liftTarget(state, id)}</span><strong>${fmt(plan ? plan.w : l.w)}</strong></li>`;
     }).join('');
     const done = flash ? `<section class="card"><h2>Workout logged</h2><ul class="rules">${flash.map((n) => `<li>${n}</li>`).join('')}</ul></section>` : '';
     return `<h1>Next up</h1>${done}
@@ -532,7 +589,7 @@ if (typeof document !== 'undefined') (() => {
     const a = state.active;
     const cards = a.ex.map((ex, i) => {
       if (inSuperset(ex.id)) return '';
-      const reps = repsFor(ex.id);
+      const reps = targetOf(ex);
       const side = LIFTS[ex.id].db ? `${fmt(ex.w)} per dumbbell` : sideText(ex.w);
       const sets = ex.sets.map((s, j) => {
         const cls = s === null ? '' : s === reps ? ' done' : ' miss';
@@ -572,34 +629,42 @@ if (typeof document !== 'undefined') (() => {
     const done = Math.min(...items.map(({ ex }) => ex.sets.filter((v) => v !== null).length));
     const status = done >= rounds ? 'All rounds done' : `Round ${done + 1} of ${rounds}`;
     const rows = items.map(({ ex, i }) => {
-      const reps = repsFor(ex.id);
+      const reps = targetOf(ex);
       const sets = ex.sets.map((v, j) => {
         const cls = v === null ? '' : v === reps ? ' done' : ' miss';
         return `<button class="set${cls}" data-act="set" data-e="${i}" data-s="${j}">${v === null ? reps : v}</button>`;
       }).join('');
+      const [lo, hi] = LIFTS[ex.id].range || [reps, reps];
+      const using = ex.suggest !== undefined && ex.w === ex.suggest;
+      const suggestion = ex.suggest === undefined ? ''
+        : `<button class="suggest${using ? ' on' : ''}" data-act="suggest" data-e="${i}">${using
+          ? `Using ${fmt(ex.suggest)} for ${ex.sets.length}×${lo} · tap to undo`
+          : `You hit ${ex.sets.length}×${hi} last time. Use ${fmt(ex.suggest)}?`}</button>`;
+      const info = reps >= hi ? `${ex.sets.length}×${reps} · top of the range` : `${ex.sets.length}×${reps} · working up to ${ex.sets.length}×${hi}`;
       return `<div class="ss-ex">
         <div class="row">
-          <div><strong>${LIFTS[ex.id].name}</strong><p class="muted small">${ex.sets.length}×${reps} · per dumbbell</p></div>
+          <div><strong>${LIFTS[ex.id].name}</strong><p class="muted small">${info}</p></div>
           <div class="stepper">
             <button data-act="w-" data-e="${i}" aria-label="Less weight">−</button>
             <span class="val">${fmt(ex.w)}</span>
             <button data-act="w+" data-e="${i}" aria-label="More weight">+</button>
           </div>
         </div>
+        ${suggestion}
         <div class="sets">${sets}</div>
       </div>`;
     }).join('');
     return `<section class="card">
       <div class="row"><h2>Superset</h2><span class="muted small">${status}</span></div>
-      <p class="muted small" style="margin-top:4px">Optional. Do one set of each, back to back, then rest ${clock(SUPERSET_REST)}. ${rounds} rounds. Tap a set to log the round for all three; tap an exercise again for reps it missed.</p>
+      <p class="muted small" style="margin-top:4px">Optional. Do one set of each, back to back, then rest ${clock(SUPERSET_REST)}. ${rounds} rounds. Tap a set to log the round for all three; tap an exercise again for reps it missed. Weights per dumbbell; reps climb from ${REP_RANGE[0]} to ${REP_RANGE[1]}, then you choose when to go heavier.</p>
       ${rows}
     </section>`;
   }
 
   function histCard(h, extra) {
     const lines = h.ex.filter((ex) => ex.sets.some((s) => s !== null)).map((ex) => {
-      const ok = ex.sets.every((s) => s === repsFor(ex.id));
-      const reps = ok ? `${ex.sets.length}×${repsFor(ex.id)}` : ex.sets.map((s) => (s === null ? '–' : s)).join('/');
+      const ok = ex.sets.every((s) => s !== null && s >= targetOf(ex));
+      const reps = ok ? `${ex.sets.length}×${targetOf(ex)}` : ex.sets.map((s) => (s === null ? '–' : s)).join('/');
       return `<div><span>${LIFTS[ex.id].name}</span><span>${reps} · ${fmt(ex.w, h.unit)}</span></div>`;
     }).join('');
     return `<section class="card">
@@ -631,7 +696,7 @@ if (typeof document !== 'undefined') (() => {
   function editView() {
     const h = draft;
     const cards = h.ex.map((ex, i) => {
-      const reps = repsFor(ex.id);
+      const reps = targetOf(ex);
       const sets = ex.sets.map((s, j) => {
         const cls = s === null ? '' : s === reps ? ' done' : ' miss';
         return `<button class="set${cls}" data-act="eset" data-e="${i}" data-s="${j}">${s === null ? '–' : s}</button>`;
@@ -744,6 +809,14 @@ if (typeof document !== 'undefined') (() => {
 
   function settingsView() {
     const u = UNITS[state.unit];
+    /* Dumbbell exercises have nothing to set: the workout works out weight and reps from history. */
+    const dumbbellRow = (id) => {
+      const plan = dumbbellPlan(state, id);
+      const last = plan.last ? `Last time ${fmt(plan.last.w)}, ${plan.last.sets.map((v) => (v === null ? '–' : v)).join('/')}` : 'Not logged yet';
+      const next = plan.suggest ? `next ${LIFTS[id].sets}×${plan.reps}, or ${fmt(plan.suggest)} suggested` : `next ${LIFTS[id].sets}×${plan.reps} at ${fmt(plan.w)}`;
+      return `<div class="lift-set"><div class="row"><span>${LIFTS[id].name}</span></div>
+        <div class="sub"><span>${last}</span><span>${next}</span></div></div>`;
+    };
     const liftRow = (id) => {
       const l = state.lifts[id];
       const other = settingsGroup === 'A' ? 'B' : 'A';
@@ -765,7 +838,9 @@ if (typeof document !== 'undefined') (() => {
     };
     const ids = WORKOUTS[settingsGroup];
     const lifts = `<div class="group"><h3 class="sub-h">Main lifts</h3>${ids.filter((id) => !inSuperset(id)).map(liftRow).join('')}</div>
-      <div class="group"><h3 class="sub-h">Superset · dumbbells</h3>${ids.filter(inSuperset).map(liftRow).join('')}</div>`;
+      <div class="group"><h3 class="sub-h">Superset · dumbbells · ${REP_RANGE[0]}–${REP_RANGE[1]} reps</h3>
+        <p class="muted small" style="margin:4px 0 0">Nothing to set here: each workout works out the weight and reps from your last session. Finish every set and the next one adds a rep to each, up to ${REP_RANGE[1]}; after that the workout suggests the next dumbbell up, and you change weight there.</p>
+        ${ids.filter(inSuperset).map(dumbbellRow).join('')}</div>`;
     const bars = u.bars.map((v) => `<option value="${v}"${v === state.bar ? ' selected' : ''}>${fmt(v)}</option>`).join('');
     return `<h1>Settings</h1>
       <section class="card">
@@ -788,7 +863,7 @@ if (typeof document !== 'undefined') (() => {
           <li>Workout A: Squat, Bench Press, Barbell Row. Workout B: Squat, Overhead Press, Deadlift.</li>
           <li>Alternate A and B, three days a week, with a rest day between.</li>
           <li>Five sets of five reps at the same weight. Deadlift is one set of five.</li>
-          <li>After the main lifts, an optional dumbbell superset: one set of ten of each exercise back to back, rest ${clock(SUPERSET_REST)}, three rounds. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Shrug.</li>
+          <li>After the main lifts, an optional dumbbell superset: one set of each exercise back to back, rest ${clock(SUPERSET_REST)}, three rounds. Reps climb from ${REP_RANGE[0]} to ${REP_RANGE[1]}, one per set each successful workout. After ${REP_RANGE[1]}, the workout suggests a heavier dumbbell; take it and reps start again at ${REP_RANGE[0]}. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Shrug.</li>
           <li>Hit every rep and the weight goes up next time, or after the number of successful workouts in a row you set above.</li>
           <li>Miss reps and you repeat the weight. Miss ${FAILS_BEFORE_DELOAD} workouts in a row and it drops 10%.</li>
           <li>Rest 1:30 if the last set felt easy, 3:00 if it was hard, 5:00 if you missed reps.</li>
@@ -839,7 +914,13 @@ if (typeof document !== 'undefined') (() => {
       type: state.next,
       started: Date.now(),
       rest: null,
-      ex: WORKOUTS[state.next].map((id) => ({ id, w: state.lifts[id].w, sets: Array(LIFTS[id].sets).fill(null) })),
+      ex: WORKOUTS[state.next].map((id) => ({
+        id,
+        w: hasRange(id) ? dumbbellPlan(state, id).w : state.lifts[id].w,
+        sets: Array(LIFTS[id].sets).fill(null),
+        ...(hasRange(id) ? { reps: liftTarget(state, id) } : {}),
+        ...(hasRange(id) && dumbbellPlan(state, id).suggest ? { suggest: dumbbellPlan(state, id).suggest } : {}),
+      })),
     };
     keepAwake(true);
   }
@@ -847,7 +928,7 @@ if (typeof document !== 'undefined') (() => {
   function tapSet(e, s) {
     unlockAudio();
     const a = state.active;
-    const reps = repsFor(a.ex[e].id);
+    const reps = targetOf(a.ex[e]);
     const cur = a.ex[e].sets[s];
     const next = cur === null ? reps : cur === 0 ? null : cur - 1;
     a.ex[e].sets[s] = next;
@@ -855,7 +936,7 @@ if (typeof document !== 'undefined') (() => {
        Tapping again adjusts only the exercise tapped, for reps it missed. */
     if (inSuperset(a.ex[e].id) && cur === null) {
       a.ex.forEach((ex) => {
-        if (inSuperset(ex.id) && s < ex.sets.length && ex.sets[s] === null) ex.sets[s] = repsFor(ex.id);
+        if (inSuperset(ex.id) && s < ex.sets.length && ex.sets[s] === null) ex.sets[s] = targetOf(ex);
       });
     }
     const allDone = a.ex.every((ex) => ex.sets.every((v) => v !== null));
@@ -886,7 +967,7 @@ if (typeof document !== 'undefined') (() => {
       type: a.type,
       unit: state.unit,
       mins: Math.max(1, Math.round((Date.now() - a.started) / 60000)),
-      ex: a.ex.map((ex) => ({ id: ex.id, w: ex.w, sets: ex.sets })),
+      ex: a.ex.map((ex) => ({ id: ex.id, w: ex.w, sets: ex.sets, ...(ex.reps ? { reps: ex.reps } : {}) })),
       /* The lifts as they were before this workout, so an edit to it can redo the progression. */
       prev: { next: state.next, lifts: Object.fromEntries(a.ex.map((ex) => [ex.id, { ...state.lifts[ex.id] }])) },
     };
@@ -971,6 +1052,20 @@ if (typeof document !== 'undefined') (() => {
         break;
       }
       case 'rest-x': state.active.rest = null; break;
+      case 'suggest': {
+        /* Switch to the suggested dumbbell and start the rep range over, or switch back. */
+        const ex = state.active.ex[Number(d.e)];
+        if (ex.w !== ex.suggest) {
+          ex.planned = { w: ex.w, reps: ex.reps };
+          ex.w = ex.suggest;
+          ex.reps = LIFTS[ex.id].range[0];
+        } else if (ex.planned) {
+          ex.w = ex.planned.w;
+          ex.reps = ex.planned.reps;
+        }
+        ex.sets = ex.sets.map((v) => (v === null ? null : Math.min(v, ex.reps)));
+        break;
+      }
       case 'finish': finishWorkout(); save(); render(); maybeReload(); return;
       case 'discard':
         if (!confirm('Discard this workout? Nothing will be saved.')) return;
@@ -988,7 +1083,7 @@ if (typeof document !== 'undefined') (() => {
       }
       case 'eset': {
         const ex = draft.ex[Number(d.e)];
-        const reps = repsFor(ex.id);
+        const reps = targetOf(ex);
         const cur = ex.sets[Number(d.s)];
         ex.sets[Number(d.s)] = cur === null ? reps : cur === 0 ? null : cur - 1;
         render();
