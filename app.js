@@ -168,8 +168,36 @@ function mergeStates(device, repo, now = Date.now()) {
   return { ...base, history, deleted, active: null, updated: now };
 }
 
+/* Projects each lift's working weight over the coming weeks, assuming every rep is hit and workouts
+   keep alternating A and B, `perWeek` times a week. It applies each lift's own increment and
+   increase frequency. Returns, per lift, the heaviest weight it would be lifted at in each week. */
+function forecast(st, weeks = 4, perWeek = 3) {
+  const sim = {};
+  for (const id in st.lifts) {
+    const l = st.lifts[id];
+    sim[id] = { w: l.w, inc: l.inc, every: l.every || 1, streak: l.streak || 0 };
+  }
+  const out = {};
+  for (const id in sim) out[id] = [];
+  let type = st.next;
+  for (let wk = 0; wk < weeks; wk++) {
+    const top = {};
+    for (let n = 0; n < perWeek; n++) {
+      for (const id of WORKOUTS[type]) {
+        const l = sim[id];
+        if (!l) continue;
+        top[id] = Math.max(top[id] || 0, l.w);
+        if (l.streak + 1 >= l.every) { l.w += l.inc; l.streak = 0; } else l.streak += 1;
+      }
+      type = type === 'A' ? 'B' : 'A';
+    }
+    for (const id in sim) out[id].push(top[id] !== undefined ? top[id] : (out[id][wk - 1] || sim[id].w));
+  }
+  return out;
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, decideSync, mergeStates, UNITS };
+  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, decideSync, mergeStates, forecast, UNITS };
 }
 
 /* ---------- App ---------- */
@@ -582,41 +610,71 @@ if (typeof document !== 'undefined') (() => {
     draft = null;
   }
 
+  const FORECAST_WEEKS = 4;
+  const WEEK_MS = 7 * 86400000;
+
   function progressView() {
     const chips = Object.keys(LIFTS).map((id) =>
       `<button class="chip${id === chartLift ? ' on' : ''}" data-act="chart" data-id="${id}">${LIFTS[id].name}</button>`).join('');
-    const pts = [];
+    const ahead = forecast(state, FORECAST_WEEKS);
+    const now = Date.now();
+
+    /* Logged sessions for the selected lift, then the forecast one week apart from today. */
+    const logged = [];
     state.history.forEach((h) => {
       const ex = h.ex.find((e) => e.id === chartLift && e.sets.some((s) => s !== null));
-      if (ex) pts.push(convert(ex.w, h.unit, state.unit));
+      if (ex) logged.push({ t: new Date(h.date).getTime(), w: convert(ex.w, h.unit, state.unit) });
     });
-    let body;
-    if (pts.length < 2) {
-      body = '<p class="hint">Log at least two workouts with this lift to see a chart.</p>';
-    } else {
-      const W = 320, H = 150, pad = 8;
-      const lo = Math.min(...pts), hi = Math.max(...pts);
-      const span = hi - lo || 1;
-      const xy = pts.map((p, i) => [
-        pad + (i * (W - 2 * pad)) / (pts.length - 1),
-        H - pad - ((p - lo) * (H - 2 * pad)) / span,
-      ]);
-      const path = xy.map((p) => p.map((n) => n.toFixed(1)).join(',')).join(' ');
-      const end = xy[xy.length - 1];
-      body = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight over time">
-          <polyline points="${path}" fill="none" stroke="#f5a524" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-          <circle cx="${end[0].toFixed(1)}" cy="${end[1].toFixed(1)}" r="4" fill="#f5a524"/>
-        </svg>
-        <div class="stats">
-          <div><b>${fmt(pts[0])}</b><span>First</span></div>
-          <div><b>${fmt(hi)}</b><span>Best</span></div>
-          <div><b>${fmt(pts[pts.length - 1])}</b><span>Latest</span></div>
-        </div>`;
-    }
+    const projected = ahead[chartLift].map((w, k) => ({ t: now + (k + 1) * WEEK_MS, w }));
+    const start = logged.length ? logged[logged.length - 1] : { t: now, w: state.lifts[chartLift].w };
+    const all = [...logged, start, ...projected];
+
+    const W = 320, H = 160, pad = 10;
+    const t0 = Math.min(...all.map((p) => p.t)), t1 = Math.max(...all.map((p) => p.t));
+    const lo = Math.min(...all.map((p) => p.w)), hi = Math.max(...all.map((p) => p.w));
+    const x = (t) => pad + ((t - t0) * (W - 2 * pad)) / (t1 - t0 || 1);
+    const y = (w) => H - pad - ((w - lo) * (H - 2 * pad)) / (hi - lo || 1);
+    const line = (pts) => pts.map((p) => `${x(p.t).toFixed(1)},${y(p.w).toFixed(1)}`).join(' ');
+    const last = projected[projected.length - 1];
+    const chart = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight over time, with a four-week forecast">
+        <line x1="${x(now).toFixed(1)}" y1="${pad / 2}" x2="${x(now).toFixed(1)}" y2="${H - pad / 2}" stroke="var(--line)" stroke-width="1"/>
+        ${logged.length > 1 ? `<polyline points="${line(logged)}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+        <polyline points="${line([start, ...projected])}" fill="none" stroke="var(--accent)" stroke-opacity="0.55" stroke-width="2.5" stroke-dasharray="5 5" stroke-linecap="round"/>
+        <circle cx="${x(start.t).toFixed(1)}" cy="${y(start.w).toFixed(1)}" r="4" fill="var(--accent)"/>
+        <circle cx="${x(last.t).toFixed(1)}" cy="${y(last.w).toFixed(1)}" r="4" fill="none" stroke="var(--accent)" stroke-width="2"/>
+      </svg>
+      <p class="legend"><span class="solid"></span>Logged <span class="dashed"></span>Forecast · line marks today</p>`;
+    const stats = logged.length ? `<div class="stats">
+        <div><b>${fmt(logged[0].w)}</b><span>First</span></div>
+        <div><b>${fmt(Math.max(...logged.map((p) => p.w)))}</b><span>Best</span></div>
+        <div><b>${fmt(last.w)}</b><span>In ${FORECAST_WEEKS} weeks</span></div>
+      </div>` : '<p class="hint">No workouts with this lift logged yet. The forecast starts from your working weight.</p>';
+
+    const cur = state.lifts[chartLift].w;
+    const weeks = ahead[chartLift].map((w, k) => {
+      const d = new Date(now + (k + 1) * WEEK_MS).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      const up = w - cur;
+      return `<li><span>Week ${k + 1} <span class="muted small">· by ${d}</span></span><span class="muted small">${up > 0 ? `+${fmt(up)}` : 'same'}</span><strong>${fmt(w)}</strong></li>`;
+    }).join('');
+
+    const order = Object.keys(LIFTS).sort((a, b) => !!LIFTS[a].opt - !!LIFTS[b].opt);
+    const table = order.map((id) => {
+      const end = ahead[id][FORECAST_WEEKS - 1];
+      return `<li><span>${LIFTS[id].name}</span><span class="muted small">${fmt(state.lifts[id].w)} →</span><strong>${fmt(end)}</strong></li>`;
+    }).join('');
+
     return `<h1>Progress</h1><div class="chips">${chips}</div>
-      <section class="card">${body}</section>
+      <section class="card">${chart}${stats}</section>
+      <section class="card"><h2>${LIFTS[chartLift].name} forecast</h2>
+        <ul class="plan">${weeks}</ul>
+      </section>
+      <section class="card"><h2>All lifts in ${FORECAST_WEEKS} weeks</h2>
+        <ul class="plan">${table}</ul>
+      </section>
+      <p class="hint">Each week shows the heaviest weight you'd lift that week. Forecasts assume you hit every rep and train 3 times a week, alternating A and B, using each lift's increment and frequency from Settings. Missed reps or skipped workouts push them back.</p>
       <p class="hint">${state.history.length} workout${state.history.length === 1 ? '' : 's'} logged.</p>`;
   }
+
 
   function settingsView() {
     const u = UNITS[state.unit];
