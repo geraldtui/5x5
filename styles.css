@@ -227,32 +227,3 @@ select {
 .lift-set .sub { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; color: var(--muted); font-size: 14px; }
 .rules { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
 .rules li { margin: 5px 0; }
-
-/* Passcode lock */
-#lock {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: env(safe-area-inset-top) 24px env(safe-area-inset-bottom);
-  background: var(--bg);
-}
-#lock[hidden] { display: none; }
-#lock h1 { font-size: 22px; margin: 0 0 20px; }
-#lock .dots { display: flex; gap: 16px; }
-#lock .dots i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--muted); }
-#lock .dots i.on { background: var(--accent); border-color: var(--accent); }
-#lock .msg { height: 20px; margin: 14px 0 18px; font-size: 14px; color: var(--bad); }
-#lock .keys { display: grid; grid-template-columns: repeat(3, 76px); gap: 16px; }
-#lock .keys button {
-  width: 76px; height: 76px;
-  border-radius: 50%;
-  background: var(--card);
-  border: 1px solid var(--line);
-  font-size: 28px;
-  font-weight: 500;
-}
-#lock .keys button:active { background: var(--line); }

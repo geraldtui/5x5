@@ -132,8 +132,28 @@ function applyProgression(st, workout) {
   return notes;
 }
 
+/* Decides whether the device should replace its data with the repository's copy.
+   It compares which workouts each side knows about (logged or deleted), so a device that is
+   missing workouts always catches up, and one with unpushed workouts keeps them. Only when both
+   know the same workouts, or both have some the other lacks, does the later save win. */
+function shouldTakeRepo(device, repo) {
+  /* `a` has news for `b` if it logged a workout `b` has never seen, or deleted one `b` still has. */
+  const hasNewsFor = (a, b) => {
+    const bLogged = new Set(b.history.map((h) => h.id));
+    const bDeleted = new Set(b.deleted || []);
+    return a.history.some((h) => !bLogged.has(h.id) && !bDeleted.has(h.id))
+      || (a.deleted || []).some((id) => bLogged.has(id));
+  };
+  const repoHasNew = hasNewsFor(repo, device);
+  const deviceHasNew = hasNewsFor(device, repo);
+  if (repoHasNew && !deviceHasNew) return true;
+  if (deviceHasNew && !repoHasNew) return false;
+  if (!device.updated && !device.history.length) return repo.history.length > 0;
+  return (repo.updated || 0) > (device.updated || 0);
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, UNITS };
+  module.exports = { freshState, applyProgression, platesPerSide, warmups, convert, shouldTakeRepo, UNITS };
 }
 
 /* ---------- App ---------- */
@@ -141,13 +161,6 @@ if (typeof module !== 'undefined') {
 if (typeof document !== 'undefined') (() => {
   const KEY = 'fivebyfive.v1';
   const DATA_FILE = '5x5-data.json';
-  /* Passcode gate. Only a salted hash of the passcode is kept here. This keeps casual visitors out of
-     the app; it does not protect the data file, which anyone can download from the site directly. */
-  const UNLOCK_KEY = 'fivebyfive.unlocked';
-  const PASS_SALT = 'fivebyfive:';
-  const PASS_HASH = 'a07b0468321daaf4ba732b7af74f26b5c067b96b9aa45cd5bb6a8f15e77b5ccd';
-  const PASS_LENGTH = 4;
-  const lockEl = document.getElementById('lock');
   const view = document.getElementById('view');
   const restEl = document.getElementById('rest');
   const tabsEl = document.getElementById('tabs');
@@ -159,8 +172,10 @@ if (typeof document !== 'undefined') (() => {
   let flash = null;
   let audio = null;
   let wakeLock = null;
-  let unlocked = false;
-  let entry = '';
+  /* A copy of the finished workout being edited in History; changes apply only when saved. */
+  let draft = null;
+  /* Set when a new version of the app has been downloaded; the page reloads at the next safe moment. */
+  let updateReady = false;
 
   /* Older saves and backups predate the dumbbell accessories and the increase frequency; give them defaults. */
   function fillLifts(s) {
@@ -189,17 +204,14 @@ if (typeof document !== 'undefined') (() => {
   /* The repository's backup file is the default data. Take it when this device has nothing yet,
      or when the file was saved more recently than anything done here. Never mid-workout. */
   async function syncFromRepo() {
-    if (!unlocked) return;
     let data;
     try {
       const res = await fetch(`${DATA_FILE}?t=${Date.now()}`, { cache: 'no-store' });
       if (!res.ok) return;
       data = await res.json();
     } catch (e) { return; /* offline or no file: keep what is on the device */ }
-    if (!validBackup(data) || state.active || !unlocked) return;
-    const localAt = state.updated || 0;
-    const untouched = !localAt && !state.history.length;
-    if ((data.updated || 0) > localAt || (untouched && data.history.length)) {
+    if (!validBackup(data) || state.active || draft) return;
+    if (shouldTakeRepo(state, data)) {
       state = fillLifts(data);
       flash = null;
       save(false);
@@ -245,48 +257,6 @@ if (typeof document !== 'undefined') (() => {
     } catch (e) { /* not supported or denied */ }
   }
 
-  /* ----- Passcode lock ----- */
-
-  async function hashCode(code) {
-    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(PASS_SALT + code));
-    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
-  function lockView(msg) {
-    const dots = Array.from({ length: PASS_LENGTH }, (_, i) => `<i class="${i < entry.length ? 'on' : ''}"></i>`).join('');
-    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'back'].map((k) =>
-      k === '' ? '<span></span>' : `<button data-key="${k}"${k === 'back' ? ' aria-label="Delete"' : ''}>${k === 'back' ? '⌫' : k}</button>`).join('');
-    lockEl.hidden = false;
-    lockEl.innerHTML = `<h1>Enter passcode</h1><div class="dots">${dots}</div><p class="msg">${msg || ''}</p><div class="keys">${keys}</div>`;
-  }
-  async function pressKey(key) {
-    if (key === 'back') entry = entry.slice(0, -1);
-    else if (entry.length < PASS_LENGTH) entry += key;
-    lockView();
-    if (entry.length < PASS_LENGTH) return;
-    const attempt = entry;
-    entry = '';
-    if (!window.crypto || !crypto.subtle) { lockView('Open the app over HTTPS to unlock it.'); return; }
-    if (await hashCode(attempt) !== PASS_HASH) { lockView('Wrong passcode. Try again.'); return; }
-    try { localStorage.setItem(UNLOCK_KEY, PASS_HASH); } catch (e) { /* will ask again next launch */ }
-    unlock();
-  }
-  function unlock() {
-    unlocked = true;
-    lockEl.hidden = true;
-    lockEl.innerHTML = '';
-    if (state.active) keepAwake(true);
-    render();
-    syncFromRepo();
-  }
-  function lock() {
-    try { localStorage.removeItem(UNLOCK_KEY); } catch (e) { /* nothing stored */ }
-    unlocked = false;
-    entry = '';
-    view.innerHTML = '';
-    restEl.hidden = true;
-    keepAwake(false);
-    lockView();
-  }
 
   /* ----- Views ----- */
 
@@ -390,9 +360,60 @@ if (typeof document !== 'undefined') (() => {
 
   function historyView() {
     if (!state.history.length) return '<h1>History</h1><p class="hint">Finished workouts show up here.</p>';
+    if (draft) return editView();
     const items = state.history.slice().reverse().map((h) =>
-      histCard(h, `<button class="link danger small" data-act="del" data-id="${h.id}">Delete</button>`)).join('');
+      histCard(h, `<div class="row">
+        <button class="link small" data-act="edit" data-id="${h.id}">Edit</button>
+        <button class="link danger small" data-act="del" data-id="${h.id}">Delete</button>
+      </div>`)).join('');
     return `<h1>History</h1>${items}`;
+  }
+
+  const isLatest = (id) => state.history.length && state.history[state.history.length - 1].id === id;
+
+  function editView() {
+    const h = draft;
+    const cards = h.ex.map((ex, i) => {
+      const reps = repsFor(ex.id);
+      const sets = ex.sets.map((s, j) => {
+        const cls = s === null ? '' : s === reps ? ' done' : ' miss';
+        return `<button class="set${cls}" data-act="eset" data-e="${i}" data-s="${j}">${s === null ? '–' : s}</button>`;
+      }).join('');
+      return `<section class="card">
+        <div class="row">
+          <div><h2>${LIFTS[ex.id].name}</h2><p class="muted small">${ex.sets.length}×${reps}</p></div>
+          <div class="stepper">
+            <button data-act="ew-" data-e="${i}" aria-label="Less weight">−</button>
+            <span class="val">${fmt(ex.w, h.unit)}</span>
+            <button data-act="ew+" data-e="${i}" aria-label="More weight">+</button>
+          </div>
+        </div>
+        <div class="sets">${sets}</div>
+      </section>`;
+    }).join('');
+    const note = isLatest(h.id) && h.prev && h.unit === state.unit
+      ? 'This is your latest workout, so saving also recalculates your next working weights.'
+      : 'Saving changes the record only. Your working weights stay as they are; adjust them in Settings if needed.';
+    return `<h1>Edit workout</h1>
+      <p class="hint" style="margin-top:-8px">${dateStr(h.date)} · Workout ${h.type}. Tap a set to cycle its reps; – means not done.</p>
+      ${cards}
+      <p class="hint">${note}</p>
+      <button class="primary" data-act="esave">Save changes</button>
+      <button class="link" data-act="ecancel" style="display:block;margin:16px auto 0">Cancel</button>`;
+  }
+
+  function saveEdit() {
+    const i = state.history.findIndex((h) => h.id === draft.id);
+    if (i < 0) { alert('That workout no longer exists.'); draft = null; return; }
+    const edited = draft;
+    /* For the latest workout, rewind the lifts it touched to how they were before it, then re-run progression. */
+    if (isLatest(edited.id) && edited.prev && edited.unit === state.unit) {
+      for (const id in edited.prev.lifts) state.lifts[id] = { ...edited.prev.lifts[id] };
+      state.next = edited.prev.next;
+      flash = applyProgression(state, edited);
+    }
+    state.history[i] = edited;
+    draft = null;
   }
 
   function progressView() {
@@ -473,7 +494,6 @@ if (typeof document !== 'undefined') (() => {
       </section>
       <button class="secondary" data-act="export">Back up data</button>
       <button class="secondary" data-act="import">Restore from backup</button>
-      <button class="secondary" data-act="lock">Lock app</button>
       <button class="secondary danger" data-act="reset">Erase everything</button>
       <p class="hint">Workouts are saved on this device. After a workout, back up and push ${DATA_FILE} to the repository; the app loads that file whenever it is newer than what is on the device.</p>`;
   }
@@ -481,7 +501,6 @@ if (typeof document !== 'undefined') (() => {
   /* ----- Rest timer and elapsed clock ----- */
 
   function tick() {
-    if (!unlocked) return;
     const a = state.active;
     const el = document.getElementById('elapsed');
     if (a && el) el.textContent = clock((Date.now() - a.started) / 1000);
@@ -541,6 +560,8 @@ if (typeof document !== 'undefined') (() => {
       unit: state.unit,
       mins: Math.max(1, Math.round((Date.now() - a.started) / 60000)),
       ex: a.ex.map((ex) => ({ id: ex.id, w: ex.w, sets: ex.sets })),
+      /* The lifts as they were before this workout, so an edit to it can redo the progression. */
+      prev: { next: state.next, lifts: Object.fromEntries(a.ex.map((ex) => [ex.id, { ...state.lifts[ex.id] }])) },
     };
     flash = applyProgression(state, entry);
     state.history.push(entry);
@@ -598,11 +619,6 @@ if (typeof document !== 'undefined') (() => {
   });
 
   document.addEventListener('click', (ev) => {
-    if (!unlocked) {
-      const key = ev.target.closest('[data-key]');
-      if (key) pressKey(key.dataset.key);
-      return;
-    }
     const tabBtn = ev.target.closest('[data-tab]');
     if (tabBtn) { tab = tabBtn.dataset.tab; render(); window.scrollTo(0, 0); return; }
     const el = ev.target.closest('[data-act]');
@@ -628,21 +644,50 @@ if (typeof document !== 'undefined') (() => {
         break;
       }
       case 'rest-x': state.active.rest = null; break;
-      case 'finish': finishWorkout(); break;
+      case 'finish': finishWorkout(); save(); render(); maybeReload(); return;
       case 'discard':
         if (!confirm('Discard this workout? Nothing will be saved.')) return;
         state.active = null;
         keepAwake(false);
-        break;
+        save(); render(); maybeReload();
+        return;
+      case 'edit': {
+        const h = state.history.find((x) => String(x.id) === d.id);
+        if (!h) return;
+        draft = JSON.parse(JSON.stringify(h));
+        render();
+        window.scrollTo(0, 0);
+        return;
+      }
+      case 'eset': {
+        const ex = draft.ex[Number(d.e)];
+        const reps = repsFor(ex.id);
+        const cur = ex.sets[Number(d.s)];
+        ex.sets[Number(d.s)] = cur === null ? reps : cur === 0 ? null : cur - 1;
+        render();
+        return;
+      }
+      case 'ew-': case 'ew+': {
+        const ex = draft.ex[Number(d.e)];
+        const u = UNITS[draft.unit];
+        const by = Math.min(u.step, draft.unit === state.unit ? state.lifts[ex.id].inc : u.step);
+        const bar = draft.unit === state.unit ? state.bar : u.bar;
+        ex.w = Math.max(minW(ex.id, bar, draft.unit), ex.w + (d.act === 'ew+' ? by : -by));
+        render();
+        return;
+      }
+      case 'ecancel': draft = null; render(); maybeReload(); return;
+      case 'esave': saveEdit(); save(); tab = 'workout'; render(); window.scrollTo(0, 0); maybeReload(); return;
       case 'del':
         if (!confirm('Delete this workout from your history? Your working weights stay as they are.')) return;
         state.history = state.history.filter((h) => String(h.id) !== d.id);
+        /* Remembered so the sync doesn't treat the repository's copy of it as a workout this device is missing. */
+        state.deleted = [...(state.deleted || []), Number(d.id)];
         break;
       case 'chart': chartLift = d.id; break;
       case 'unit': setUnit(d.u); break;
       case 'export': exportData(); return;
       case 'import': importFile.click(); return;
-      case 'lock': lock(); return;
       case 'reset':
         if (!confirm('Erase all workouts and settings on this device? This cannot be undone.')) return;
         state = freshState(state.unit);
@@ -655,15 +700,42 @@ if (typeof document !== 'undefined') (() => {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && unlocked) {
-      if (state.active) keepAwake(true);
-      tick();
-      syncFromRepo();
-    }
+    if (document.visibilityState !== 'visible') return;
+    checkForUpdate();
+    maybeReload();
+    if (state.active) keepAwake(true);
+    tick();
+    syncFromRepo();
   });
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  let remembered = null;
-  try { remembered = localStorage.getItem(UNLOCK_KEY); } catch (e) { /* storage unavailable */ }
-  if (remembered === PASS_HASH) unlock(); else lockView();
+  /* ----- App updates ----- */
+
+  /* Reload into the new version, but never in the middle of a workout or an edit, where it would cost
+     the rest timer, the sound and any unsaved changes. Those reload as soon as they end instead. */
+  function maybeReload() {
+    if (updateReady && !state.active && !draft) {
+      updateReady = false;
+      location.reload();
+    }
+  }
+  let registration = null;
+  function checkForUpdate() {
+    if (registration) registration.update().catch(() => { /* offline */ });
+  }
+  if ('serviceWorker' in navigator) {
+    /* The first install takes control of a page that is already up to date, so it needs no reload.
+       Every later change of controller is a new version. */
+    let controlled = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!controlled) { controlled = true; return; }
+      updateReady = true;
+      maybeReload();
+    });
+    navigator.serviceWorker.register('sw.js').then((reg) => { registration = reg; }).catch(() => {});
+  }
+  /* Clear the unlock flag left by the passcode lock that earlier versions had. */
+  try { localStorage.removeItem('fivebyfive.unlocked'); } catch (e) { /* storage unavailable */ }
+  if (state.active) keepAwake(true);
+  render();
+  syncFromRepo();
 })();

@@ -1,8 +1,15 @@
-const CACHE = '5x5-v7';
+// Bump this on every change to the app's files: a changed sw.js is what makes installed copies update.
+// Pushing only 5x5-data.json needs no bump.
+const CACHE = '5x5-v9';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // 'reload' skips the browser's HTTP cache, so the new version never caches a stale file.
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((c) => c.addAll(ASSETS.map((a) => new Request(a, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
