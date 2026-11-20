@@ -156,6 +156,27 @@ function warmups(w, bar, unit) {
   return out;
 }
 
+/* The next working weight of a lift comes straight from the last workout that had it: all reps done
+   adds the increment, any missed reps repeat the weight. Dumbbells keep the last weight (their reps
+   climb instead). A lift with no logged workouts keeps the starting weight set in Settings. */
+function deriveLift(st, id) {
+  const l = st.lifts[id];
+  for (let i = st.history.length - 1; i >= 0; i--) {
+    const h = st.history[i];
+    const ex = h.ex.find((e) => e.id === id && e.sets.some((v) => v !== null));
+    if (!ex) continue;
+    const w = convert(ex.w, h.unit, st.unit);
+    const ok = !hasRange(id) && ex.sets.every((v) => v === targetOf(ex));
+    return { w: ok ? w + l.inc : w, fails: 0, streak: 0, every: 1 };
+  }
+  return { w: l.w, fails: 0, streak: 0, every: 1 };
+}
+function deriveLifts(st) {
+  for (const id in LIFTS) if (st.lifts[id]) Object.assign(st.lifts[id], deriveLift(st, id));
+  return st;
+}
+const hasLogged = (st, id) => st.history.some((h) => h.ex.some((e) => e.id === id && e.sets.some((v) => v !== null)));
+
 /* Applies the progression rules to `st` for a finished workout. Returns notes. */
 function applyProgression(st, workout) {
   const step = UNITS[st.unit].step;
@@ -183,31 +204,12 @@ function applyProgression(st, workout) {
       }
       continue;
     }
-    const every = lift.every || 1;
-    /* Successes only count toward an increase while the weight stays the same. */
-    const streak = ex.w === lift.w ? lift.streak || 0 : 0;
     if (ex.sets.every((s) => s === targetOf(ex))) {
-      lift.fails = 0;
-      if (streak + 1 >= every) {
-        lift.w = ex.w + lift.inc;
-        lift.streak = 0;
-        notes.push(`${name}: all reps done, next time ${num(lift.w)}${st.unit}`);
-      } else {
-        lift.w = ex.w;
-        lift.streak = streak + 1;
-        notes.push(`${name}: all reps done, stays at ${num(ex.w)}${st.unit} (${lift.streak}/${every} before adding weight)`);
-      }
-      continue;
-    }
-    lift.streak = 0;
-    lift.fails += 1;
-    if (lift.fails >= FAILS_BEFORE_DELOAD) {
-      lift.w = Math.max(minW(ex.id, st.bar, st.unit), floorTo(ex.w * DELOAD, step));
-      lift.fails = 0;
-      notes.push(`${name}: missed ${FAILS_BEFORE_DELOAD} workouts in a row, deload to ${num(lift.w)}${st.unit}`);
+      lift.w = ex.w + lift.inc;
+      notes.push(`${name}: all reps done, next time ${num(lift.w)}${st.unit}`);
     } else {
       lift.w = ex.w;
-      notes.push(`${name}: missed reps, repeat ${num(ex.w)}${st.unit} (${lift.fails}/${FAILS_BEFORE_DELOAD})`);
+      notes.push(`${name}: missed reps, repeat ${num(ex.w)}${st.unit}`);
     }
   }
   st.next = workout.type === 'A' ? 'B' : 'A';
@@ -356,6 +358,7 @@ if (typeof document !== 'undefined') (() => {
   }
   /* Every change stamps the time, so the app can tell whether the device or the repository copy is newer. */
   function save(stamp = true) {
+    deriveLifts(state);
     if (stamp) state.updated = Date.now();
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* storage unavailable */ }
     if (stamp) scheduleSync();
@@ -573,6 +576,7 @@ if (typeof document !== 'undefined') (() => {
   /* ----- Views ----- */
 
   function render() {
+    deriveLifts(state);
     tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
     if (tab === 'workout') view.innerHTML = state.active ? activeView() : homeView();
     else if (tab === 'history') view.innerHTML = historyView();
@@ -753,9 +757,7 @@ if (typeof document !== 'undefined') (() => {
         <div class="sets">${sets}</div>
       </section>`;
     }).join('');
-    const note = h.unit === state.unit
-      ? 'Saving recalculates the next working weight of any lift you change here, unless you\u2019ve done it again since.'
-      : 'This workout was logged in another unit, so saving changes the record only.';
+    const note = 'Next working weights come from your latest workout with each lift, so they update when you save.';
     return `<h1>Edit workout</h1>
       <p class="hint" style="margin-top:-8px">${dateStr(h.date)} · Workout ${h.type}. Tap a set to cycle its reps; – means not done.</p>
       ${cards}
@@ -764,67 +766,22 @@ if (typeof document !== 'undefined') (() => {
       <button class="link" data-act="ecancel" style="display:block;margin:16px auto 0">Cancel</button>`;
   }
 
+  /* Next working weights come straight from the history, so an edit or delete only changes the record. */
   function saveEdit() {
     const i = state.history.findIndex((h) => h.id === draft.id);
     if (i < 0) { alert('That workout no longer exists.'); draft = null; return; }
-    const edited = draft;
-    const orig = state.history[i];
-    /* Only lifts whose weight or sets actually changed are recalculated, so anything set by hand in
-       Settings since then stays put for the rest. */
-    const changed = (ex) => {
-      const o = orig.ex.find((e) => e.id === ex.id);
-      return !o || o.w !== ex.w || JSON.stringify(o.sets) !== JSON.stringify(ex.sets);
-    };
-    const ids = edited.ex.filter(changed).map((ex) => ex.id).filter((id) => !doneLater(i, id));
-    const before = Object.fromEntries(ids.map((id) => [id, liftBefore(i, id)]));
-    state.history[i] = edited;
+    state.history[i] = draft;
     draft = null;
-    /* Re-run progression from the edited workout for the changed lifts it was the last word on. */
-    const owned = ids.filter((id) => before[id]);
-    if (!owned.length || edited.unit !== state.unit) return;
-    const tmp = { unit: state.unit, bar: state.bar, next: state.next, history: state.history.slice(0, i),
-      lifts: Object.fromEntries(owned.map((id) => [id, before[id]])) };
-    const notes = applyProgression(tmp, { ...edited, ex: edited.ex.filter((ex) => owned.includes(ex.id)) });
-    for (const id of owned) state.lifts[id] = tmp.lifts[id];
-    if (isLatest(edited.id)) flash = notes;
   }
 
-  const doneLater = (i, lid) => state.history.slice(i + 1).some((h) => h.ex.some((e) => e.id === lid));
-
-  /* What a lift was set to just before the workout at index i: its saved snapshot if it has one,
-     otherwise worked out again from the previous workout that had it. Null if there is no way to tell. */
-  function liftBefore(i, lid) {
-    const h = state.history[i];
-    if (!state.lifts[lid]) return null;
-    if (h.prev && h.prev.lifts[lid] && h.unit === state.unit) return { ...h.prev.lifts[lid] };
-    let j = i - 1;
-    while (j >= 0 && !state.history[j].ex.some((e) => e.id === lid && e.sets.some((v) => v !== null))) j--;
-    if (j < 0 || state.history[j].unit !== state.unit) return null;
-    const prior = state.history[j];
-    const pe = prior.ex.find((e) => e.id === lid);
-    const lift = prior.prev && prior.prev.lifts[lid]
-      ? { ...prior.prev.lifts[lid] }
-      : { ...state.lifts[lid], w: pe.w, streak: 0, fails: 0 };
-    const tmp = { unit: state.unit, bar: state.bar, next: state.next, history: state.history.slice(0, j), lifts: { [lid]: lift } };
-    applyProgression(tmp, { ...prior, ex: [pe] });
-    return tmp.lifts[lid];
-  }
-
-  /* Deleting a workout winds back the lifts it was the last word on to what they were before it.
-     Lifts done again in a later workout keep what that workout set. Deleting the latest workout
-     also makes its type the next workout again. */
   function deleteWorkout(id) {
     const i = state.history.findIndex((h) => String(h.id) === String(id));
     if (i < 0) return;
-    const gone = state.history[i];
     const wasLatest = i === state.history.length - 1;
-    for (const ex of gone.ex) {
-      if (doneLater(i, ex.id)) continue;
-      const lift = liftBefore(i, ex.id);
-      if (lift) state.lifts[ex.id] = lift;
-    }
     state.history.splice(i, 1);
-    if (wasLatest) state.next = gone.prev ? gone.prev.next : gone.type;
+    /* The next workout follows on from whatever is now the latest one. */
+    const last = state.history[state.history.length - 1];
+    if (wasLatest) state.next = last ? (last.type === 'A' ? 'B' : 'A') : 'A';
     flash = null;
   }
 
@@ -912,18 +869,15 @@ if (typeof document !== 'undefined') (() => {
       const other = settingsGroup === 'A' ? 'B' : 'A';
       const shared = WORKOUTS[other].includes(id) ? `<span class="muted small"> · also in ${other}</span>` : '';
       const opts = u.incs.map((v) => `<option value="${v}"${v === l.inc ? ' selected' : ''}>+${fmt(v)}</option>`).join('');
-      const freqs = EVERY_OPTIONS.map((n) =>
-        `<option value="${n}"${n === l.every ? ' selected' : ''}>${n === 1 ? 'Every workout' : `Every ${n} workouts`}</option>`).join('');
       return `<div class="lift-set">
         <div class="row"><span>${LIFTS[id].name}${shared}</span>
-          <div class="stepper">
+          ${hasLogged(state, id) ? `<strong>${fmt(l.w)}</strong>` : `<div class="stepper">
             <button data-act="l-" data-id="${id}" aria-label="Less weight">−</button>
             ${wInput('l', `data-id="${id}"`, l.w)}
             <button data-act="l+" data-id="${id}" aria-label="More weight">+</button>
-          </div>
+          </div>`}
         </div>
         <div class="sub"><span>Weight to add</span><select data-inc="${id}">${opts}</select></div>
-        <div class="sub"><span>Add it after</span><select data-every="${id}">${freqs}</select></div>
       </div>`;
     };
     const ids = WORKOUTS[settingsGroup];
@@ -945,7 +899,7 @@ if (typeof document !== 'undefined') (() => {
           <button data-act="sgroup" data-g="A" class="${settingsGroup === 'A' ? 'on' : ''}">Workout A</button>
           <button data-act="sgroup" data-g="B" class="${settingsGroup === 'B' ? 'on' : ''}">Workout B</button>
         </div></div>
-        <p class="muted small" style="margin:6px 0 4px">Next weight for each exercise, how much to add, and how many successful workouts in a row it takes. Squat is in both workouts; changing it here changes it for both.</p>
+        <p class="muted small" style="margin:6px 0 4px">Next weight for each exercise and how much to add. Once a lift has a logged workout, its next weight comes from that workout; change it during the workout if you need to. Squat is in both workouts; changing it here changes it for both.</p>
         ${lifts}
       </section>
       <section class="card"><h2>How the program works</h2>
@@ -954,8 +908,7 @@ if (typeof document !== 'undefined') (() => {
           <li>Alternate A and B, three days a week, with a rest day between.</li>
           <li>Five sets of five reps at the same weight. Deadlift is one set of five.</li>
           <li>After the main lifts, an optional dumbbell superset: one set of each exercise back to back, rest ${clock(SUPERSET_REST)}, three rounds. Reps climb from ${REP_RANGE[0]} to ${REP_RANGE[1]}, one per set each successful workout. After ${REP_RANGE[1]}, the workout suggests a heavier dumbbell; take it and reps start again at ${REP_RANGE[0]}. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Chest Press.</li>
-          <li>Hit every rep and the weight goes up next time, or after the number of successful workouts in a row you set above.</li>
-          <li>Miss reps and you repeat the weight. Miss ${FAILS_BEFORE_DELOAD} workouts in a row and it drops 10%.</li>
+          <li>Your next weight comes from your last workout with that lift: hit every rep and it goes up by the amount above; miss any and you repeat it.</li>
           <li>Rest 1:30 if the last set felt easy, 3:00 if it was hard, 5:00 if you missed reps.</li>
         </ul>
       </section>
@@ -1238,7 +1191,7 @@ if (typeof document !== 'undefined') (() => {
       case 'ecancel': draft = null; render(); maybeReload(); return;
       case 'esave': saveEdit(); save(); tab = 'workout'; render(); window.scrollTo(0, 0); maybeReload(); return;
       case 'del':
-        if (!confirm('Delete this workout? Your next working weights are recalculated without it.')) return;
+        if (!confirm('Delete this workout? Next working weights will come from the workout before it.')) return;
         deleteWorkout(d.id);
         /* Remembered so the sync doesn't treat the repository's copy of it as a workout this device is missing. */
         state.deleted = [...(state.deleted || []), Number(d.id)];
