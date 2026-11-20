@@ -112,12 +112,24 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 }
 .stepper button:active { background: #3a3e46; }
 .stepper .val {
+  display: flex; align-items: baseline; justify-content: center; gap: 2px;
   min-width: 78px;
-  text-align: center;
   font-weight: 700;
   font-size: 18px;
   font-variant-numeric: tabular-nums;
 }
+.stepper .val input {
+  width: 52px; padding: 4px 2px;
+  background: transparent; color: var(--text);
+  border: 1px solid transparent; border-bottom-color: var(--line); border-radius: 6px;
+  font: inherit; text-align: right;
+  -webkit-user-select: text; user-select: text;
+  -moz-appearance: textfield;
+}
+.stepper .val input::-webkit-outer-spin-button,
+.stepper .val input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper .val input:focus { outline: none; border-color: var(--accent); background: var(--bg); }
+.stepper .val span { font-size: 14px; color: var(--muted); font-weight: 600; }
 
 .sets { display: flex; gap: 8px; margin: 14px 0 4px; }
 .set {
@@ -289,9 +301,12 @@ select {
   background: rgba(245, 165, 36, 0.12); border: 1px solid rgba(245, 165, 36, 0.35);
   border-radius: 14px; padding: 10px 14px; margin: 4px 0 12px;
 }
-.streak strong { font-size: 22px; color: var(--accent); margin-right: 2px; }
-.streak .flame { font-size: 22px; }
-.streak .muted { margin-left: auto; }
+.streak .flame { font-size: 26px; }
+.streak .stat { display: flex; flex-direction: column; line-height: 1.15; flex: 1; }
+.streak .stat strong { font-size: 22px; color: var(--accent); }
+.streak .stat span:not(.muted) { font-size: 13px; }
+.streak .stat.wk { text-align: right; }
+.streak .stat.wk strong { color: var(--text); }
 .streak.cold { background: var(--card); border-color: var(--line); }
 .streak.cold strong { color: var(--muted); }
 .confetti { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1000; }

@@ -97,13 +97,26 @@ const num = (x) => String(Math.round(x * 100) / 100);
 /* Streaks: workouts in a row with no more than STREAK_GAP days between them. A three-day week
    (say Mon, Wed, Fri) is at most a three-day gap, so one extra day of slack keeps it alive. */
 const STREAK_GAP = 4;
+const WEEK_TARGET = 3;
 const dayNum = (d) => { const x = new Date(d); return Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000); };
 function streaks(history, now = Date.now()) {
   const days = [...new Set(history.map((h) => dayNum(h.date)))].sort((a, b) => a - b);
   let best = 0, run = 0;
   days.forEach((d, i) => { run = i && d - days[i - 1] <= STREAK_GAP ? run + 1 : 1; best = Math.max(best, run); });
   const alive = days.length && dayNum(now) - days[days.length - 1] <= STREAK_GAP;
-  return { current: alive ? run : 0, best };
+  /* Weeks run Monday to Sunday and count once all WEEK_TARGET workouts are done. The week in
+     progress never breaks the streak; it joins it when it is complete. */
+  const weekOf = (d) => Math.floor((d + 3) / 7); /* day 0 (1 Jan 1970) was a Thursday */
+  const perWeek = {};
+  days.forEach((d) => { const w = weekOf(d); perWeek[w] = (perWeek[w] || 0) + 1; });
+  const full = (w) => (perWeek[w] || 0) >= WEEK_TARGET;
+  const weeks = Object.keys(perWeek).map(Number).filter(full).sort((a, b) => a - b);
+  let bestWeeks = 0, wr = 0;
+  weeks.forEach((w, i) => { wr = i && w - weeks[i - 1] === 1 ? wr + 1 : 1; bestWeeks = Math.max(bestWeeks, wr); });
+  const thisWeek = weekOf(dayNum(now));
+  let curWeeks = 0;
+  for (let w = full(thisWeek) ? thisWeek : thisWeek - 1; full(w); w--) curWeeks++;
+  return { current: alive ? run : 0, best, weeks: curWeeks, bestWeeks, thisWeek: perWeek[thisWeek] || 0 };
 }
 
 function freshState(unit) {
@@ -515,6 +528,9 @@ if (typeof document !== 'undefined') (() => {
     </section>`;
   }
 
+  /* A weight you can type straight into, with the − / + buttons either side for quick nudges. */
+  const wInput = (kind, attrs, w, unit) =>
+    `<label class="val"><input type="number" inputmode="decimal" step="any" min="0" data-wedit="${kind}" ${attrs} value="${num(w)}" aria-label="Weight"><span>${unit || state.unit}</span></label>`;
   const fmt = (w, unit) => `${num(w)}${unit || state.unit}`;
   const clock = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
   const dateStr = (iso) => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
@@ -589,8 +605,9 @@ if (typeof document !== 'undefined') (() => {
     const st = streaks(state.history);
     const streakHtml = st.best ? `<div class="streak${st.current ? '' : ' cold'}">
         <span class="flame">${st.current ? '🔥' : '🧊'}</span>
-        <span><strong>${st.current}</strong> workout streak</span>
-        <span class="muted small">Best ${st.best}</span></div>` : '';
+        <div class="stat"><strong>${st.current}</strong><span>workout${st.current === 1 ? '' : 's'}</span><span class="muted small">best ${st.best}</span></div>
+        <div class="stat"><strong>${st.weeks}</strong><span>week${st.weeks === 1 ? '' : 's'}</span><span class="muted small">best ${st.bestWeeks}</span></div>
+        <div class="stat wk"><strong>${Math.min(st.thisWeek, WEEK_TARGET)}/${WEEK_TARGET}</strong><span>this week</span></div></div>` : '';
     return `${streakHtml}<h1>Next up</h1>${done}
       <section class="card">
         <div class="row"><h2>Workout ${type}</h2><button class="link" data-act="swap">Switch to ${other}</button></div>
@@ -627,7 +644,7 @@ if (typeof document !== 'undefined') (() => {
           <div><h2>${LIFTS[ex.id].name}</h2><p class="muted small">${ex.sets.length}×${reps}</p></div>
           <div class="stepper">
             <button data-act="w-" data-e="${i}" aria-label="Less weight">−</button>
-            <span class="val">${fmt(ex.w)}</span>
+            ${wInput('w', `data-e="${i}"`, ex.w)}
             <button data-act="w+" data-e="${i}" aria-label="More weight">+</button>
           </div>
         </div>
@@ -669,7 +686,7 @@ if (typeof document !== 'undefined') (() => {
           <div><strong>${LIFTS[ex.id].name}</strong><p class="muted small">${info}</p></div>
           <div class="stepper">
             <button data-act="w-" data-e="${i}" aria-label="Less weight">−</button>
-            <span class="val">${fmt(ex.w)}</span>
+            ${wInput('w', `data-e="${i}"`, ex.w)}
             <button data-act="w+" data-e="${i}" aria-label="More weight">+</button>
           </div>
         </div>
@@ -729,7 +746,7 @@ if (typeof document !== 'undefined') (() => {
           <div><h2>${LIFTS[ex.id].name}</h2><p class="muted small">${ex.sets.length}×${reps}</p></div>
           <div class="stepper">
             <button data-act="ew-" data-e="${i}" aria-label="Less weight">−</button>
-            <span class="val">${fmt(ex.w, h.unit)}</span>
+            ${wInput('ew', `data-e="${i}"`, ex.w, h.unit)}
             <button data-act="ew+" data-e="${i}" aria-label="More weight">+</button>
           </div>
         </div>
@@ -851,7 +868,7 @@ if (typeof document !== 'undefined') (() => {
         <div class="row"><span>${LIFTS[id].name}${shared}</span>
           <div class="stepper">
             <button data-act="l-" data-id="${id}" aria-label="Less weight">−</button>
-            <span class="val">${fmt(l.w)}</span>
+            ${wInput('l', `data-id="${id}"`, l.w)}
             <button data-act="l+" data-id="${id}" aria-label="More weight">+</button>
           </div>
         </div>
@@ -1079,6 +1096,18 @@ if (typeof document !== 'undefined') (() => {
     if (t.id === 'bar') state.bar = Number(t.value);
     else if (t.dataset.inc) state.lifts[t.dataset.inc].inc = Number(t.value);
     else if (t.dataset.every) state.lifts[t.dataset.every].every = Number(t.value);
+    else if (t.dataset.wedit) {
+      const v = Math.round(Number(t.value) * 100) / 100;
+      const k = t.dataset.wedit;
+      const id = k === 'l' ? t.dataset.id : (k === 'w' ? state.active : draft).ex[Number(t.dataset.e)].id;
+      const unit = k === 'ew' ? draft.unit : state.unit;
+      const bar = k === 'ew' && draft.unit !== state.unit ? UNITS[unit].bar : state.bar;
+      if (!Number.isFinite(v) || v <= 0) { render(); return; }
+      const w = Math.max(minW(id, bar, unit), v);
+      if (k === 'l') { const l = state.lifts[id]; l.w = w; l.fails = 0; l.streak = 0; }
+      else (k === 'w' ? state.active : draft).ex[Number(t.dataset.e)].w = w;
+      if (k === 'ew') { render(); return; }
+    }
     else return;
     save();
     render();
