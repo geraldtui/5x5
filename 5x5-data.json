@@ -4,7 +4,7 @@
   "bar": 20,
   "lifts": {
     "squat": {
-      "w": 67.5,
+      "w": 70,
       "inc": 2.5,
       "fails": 0,
       "every": 1,
@@ -25,14 +25,14 @@
       "streak": 0
     },
     "ohp": {
-      "w": 30,
+      "w": 32.5,
       "inc": 2.5,
       "fails": 0,
       "every": 1,
       "streak": 0
     },
     "deadlift": {
-      "w": 60,
+      "w": 65,
       "inc": 5,
       "fails": 0,
       "every": 1,
@@ -43,7 +43,7 @@
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 1,
+      "streak": 0,
       "target": 10
     },
     "dbcurl": {
@@ -83,7 +83,7 @@
       "inc": 2.5,
       "fails": 0,
       "every": 3,
-      "streak": 1,
+      "streak": 0,
       "target": 10
     },
     "dbpress": {
@@ -94,7 +94,7 @@
       "streak": 0
     }
   },
-  "next": "B",
+  "next": "A",
   "history": [
     {
       "id": 1762028640000,
@@ -753,8 +753,125 @@
           }
         }
       }
+    },
+    {
+      "id": 1795193408936,
+      "date": "2026-11-20T16:50:08.936Z",
+      "type": "B",
+      "unit": "kg",
+      "mins": 1,
+      "ex": [
+        {
+          "id": "squat",
+          "w": 67.5,
+          "sets": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "id": "ohp",
+          "w": 30,
+          "sets": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "id": "deadlift",
+          "w": 60,
+          "sets": [
+            5
+          ]
+        },
+        {
+          "id": "dbrow",
+          "w": 20,
+          "sets": [
+            11,
+            11,
+            11
+          ],
+          "reps": 11
+        },
+        {
+          "id": "dbfly",
+          "w": 10,
+          "sets": [
+            11,
+            11,
+            11
+          ],
+          "reps": 11
+        },
+        {
+          "id": "dbpress",
+          "w": 15,
+          "sets": [
+            10,
+            10,
+            10
+          ],
+          "reps": 10
+        }
+      ],
+      "prev": {
+        "next": "B",
+        "lifts": {
+          "squat": {
+            "w": 67.5,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0
+          },
+          "ohp": {
+            "w": 30,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0
+          },
+          "deadlift": {
+            "w": 60,
+            "inc": 5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0
+          },
+          "dbrow": {
+            "w": 20,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 3,
+            "streak": 1,
+            "target": 10
+          },
+          "dbfly": {
+            "w": 10,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 3,
+            "streak": 1,
+            "target": 10
+          },
+          "dbpress": {
+            "w": 15,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0
+          }
+        }
+      }
     }
   ],
   "active": null,
-  "updated": 1795193272859
+  "updated": 1795193408957
 }
