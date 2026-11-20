@@ -753,9 +753,9 @@ if (typeof document !== 'undefined') (() => {
         <div class="sets">${sets}</div>
       </section>`;
     }).join('');
-    const note = isLatest(h.id) && h.prev && h.unit === state.unit
-      ? 'This is your latest workout, so saving also recalculates your next working weights.'
-      : 'Saving changes the record only. Your working weights stay as they are; adjust them in Settings if needed.';
+    const note = h.unit === state.unit
+      ? 'Saving recalculates the next working weight of any lift you change here, unless you\u2019ve done it again since.'
+      : 'This workout was logged in another unit, so saving changes the record only.';
     return `<h1>Edit workout</h1>
       <p class="hint" style="margin-top:-8px">${dateStr(h.date)} · Workout ${h.type}. Tap a set to cycle its reps; – means not done.</p>
       ${cards}
@@ -768,46 +768,62 @@ if (typeof document !== 'undefined') (() => {
     const i = state.history.findIndex((h) => h.id === draft.id);
     if (i < 0) { alert('That workout no longer exists.'); draft = null; return; }
     const edited = draft;
-    /* For the latest workout, rewind the lifts it touched to how they were before it, then re-run progression. */
-    if (isLatest(edited.id) && edited.prev && edited.unit === state.unit) {
-      for (const id in edited.prev.lifts) state.lifts[id] = { ...edited.prev.lifts[id] };
-      state.next = edited.prev.next;
-      flash = applyProgression(state, edited);
-    }
+    const orig = state.history[i];
+    /* Only lifts whose weight or sets actually changed are recalculated, so anything set by hand in
+       Settings since then stays put for the rest. */
+    const changed = (ex) => {
+      const o = orig.ex.find((e) => e.id === ex.id);
+      return !o || o.w !== ex.w || JSON.stringify(o.sets) !== JSON.stringify(ex.sets);
+    };
+    const ids = edited.ex.filter(changed).map((ex) => ex.id).filter((id) => !doneLater(i, id));
+    const before = Object.fromEntries(ids.map((id) => [id, liftBefore(i, id)]));
     state.history[i] = edited;
     draft = null;
+    /* Re-run progression from the edited workout for the changed lifts it was the last word on. */
+    const owned = ids.filter((id) => before[id]);
+    if (!owned.length || edited.unit !== state.unit) return;
+    const tmp = { unit: state.unit, bar: state.bar, next: state.next, history: state.history.slice(0, i),
+      lifts: Object.fromEntries(owned.map((id) => [id, before[id]])) };
+    const notes = applyProgression(tmp, { ...edited, ex: edited.ex.filter((ex) => owned.includes(ex.id)) });
+    for (const id of owned) state.lifts[id] = tmp.lifts[id];
+    if (isLatest(edited.id)) flash = notes;
   }
 
-  /* Deleting a workout winds back the lifts it was the last word on: each one is set to what it was
-     before that workout, or, for older records without that snapshot, worked out again from the
-     previous workout that had it. Lifts done again in a later workout keep what that workout set.
-     Deleting the latest workout also makes its type the next workout again. */
+  const doneLater = (i, lid) => state.history.slice(i + 1).some((h) => h.ex.some((e) => e.id === lid));
+
+  /* What a lift was set to just before the workout at index i: its saved snapshot if it has one,
+     otherwise worked out again from the previous workout that had it. Null if there is no way to tell. */
+  function liftBefore(i, lid) {
+    const h = state.history[i];
+    if (!state.lifts[lid]) return null;
+    if (h.prev && h.prev.lifts[lid] && h.unit === state.unit) return { ...h.prev.lifts[lid] };
+    let j = i - 1;
+    while (j >= 0 && !state.history[j].ex.some((e) => e.id === lid && e.sets.some((v) => v !== null))) j--;
+    if (j < 0 || state.history[j].unit !== state.unit) return null;
+    const prior = state.history[j];
+    const pe = prior.ex.find((e) => e.id === lid);
+    const lift = prior.prev && prior.prev.lifts[lid]
+      ? { ...prior.prev.lifts[lid] }
+      : { ...state.lifts[lid], w: pe.w, streak: 0, fails: 0 };
+    const tmp = { unit: state.unit, bar: state.bar, next: state.next, history: state.history.slice(0, j), lifts: { [lid]: lift } };
+    applyProgression(tmp, { ...prior, ex: [pe] });
+    return tmp.lifts[lid];
+  }
+
+  /* Deleting a workout winds back the lifts it was the last word on to what they were before it.
+     Lifts done again in a later workout keep what that workout set. Deleting the latest workout
+     also makes its type the next workout again. */
   function deleteWorkout(id) {
     const i = state.history.findIndex((h) => String(h.id) === String(id));
     if (i < 0) return;
     const gone = state.history[i];
     const wasLatest = i === state.history.length - 1;
-    state.history.splice(i, 1);
-    const rest = state.history;
     for (const ex of gone.ex) {
-      const lid = ex.id;
-      if (!state.lifts[lid] || rest.slice(i).some((h) => h.ex.some((e) => e.id === lid))) continue;
-      if (gone.prev && gone.prev.lifts[lid] && gone.unit === state.unit) {
-        state.lifts[lid] = { ...gone.prev.lifts[lid] };
-        continue;
-      }
-      let j = i - 1;
-      while (j >= 0 && !rest[j].ex.some((e) => e.id === lid && e.sets.some((v) => v !== null))) j--;
-      if (j < 0 || rest[j].unit !== state.unit) continue;
-      const before = rest[j];
-      const pe = before.ex.find((e) => e.id === lid);
-      const lift = before.prev && before.prev.lifts[lid]
-        ? { ...before.prev.lifts[lid] }
-        : { ...state.lifts[lid], w: pe.w, streak: 0, fails: 0 };
-      const tmp = { unit: state.unit, bar: state.bar, next: state.next, history: rest.slice(0, j), lifts: { [lid]: lift } };
-      applyProgression(tmp, { ...before, ex: [pe] });
-      state.lifts[lid] = tmp.lifts[lid];
+      if (doneLater(i, ex.id)) continue;
+      const lift = liftBefore(i, ex.id);
+      if (lift) state.lifts[ex.id] = lift;
     }
+    state.history.splice(i, 1);
     if (wasLatest) state.next = gone.prev ? gone.prev.next : gone.type;
     flash = null;
   }
