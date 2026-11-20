@@ -49,7 +49,7 @@ function dumbbellPlan(st, id) {
     const w = convert(ex.w, h.unit, st.unit);
     const target = Math.min(hi, Math.max(lo, targetOf(ex)));
     const done = ex.sets.every((v) => v !== null && v >= target);
-    if (done && target >= hi) return { w, reps: hi, suggest: w + UNITS[st.unit].step, last: { w, sets: ex.sets } };
+    if (done && target >= hi) return { w, reps: hi, suggest: w + stepFor(id, st.unit), last: { w, sets: ex.sets } };
     return { w, reps: done ? target + 1 : target, last: { w, sets: ex.sets } };
   }
   return { w: st.lifts[id].w, reps: repsFor(id), last: null };
@@ -59,7 +59,7 @@ function dumbbellPlan(st, id) {
 const inSuperset = (id) => !!LIFTS[id].opt;
 const SUPERSET_REST = 90;
 /* Smallest sensible weight: dumbbells go down to one step, barbell lifts stop at the bar. */
-const minW = (id, bar, unit) => (LIFTS[id].db ? UNITS[unit].step : bar);
+const minW = (id, bar, unit) => (LIFTS[id].db ? UNITS[unit].dbStep : bar);
 const FAILS_BEFORE_DELOAD = 3;
 /* Choices for how many successful workouts in a row a lift needs before its weight goes up. */
 const EVERY_OPTIONS = [1, 2, 3, 4, 5];
@@ -68,7 +68,7 @@ const LB_PER_KG = 2.20462;
 
 const UNITS = {
   kg: {
-    bar: 20, step: 2.5,
+    bar: 20, step: 2.5, dbStep: 1,
     w: { squat: 20, bench: 20, row: 30, ohp: 20, deadlift: 40, dbrow: 10, dbcurl: 5, dbshrug: 10, dbtri: 5, dblat: 2.5, dbfly: 2.5, dbpress: 15 },
     inc: { squat: 2.5, bench: 2.5, row: 2.5, ohp: 2.5, deadlift: 5, dbrow: 2.5, dbcurl: 2.5, dbshrug: 2.5, dbtri: 2.5, dblat: 2.5, dbfly: 2.5, dbpress: 2.5 },
     incs: [1.25, 2.5, 5],
@@ -76,7 +76,7 @@ const UNITS = {
     plates: [25, 20, 15, 10, 5, 2.5, 1.25],
   },
   lb: {
-    bar: 45, step: 5,
+    bar: 45, step: 5, dbStep: 2,
     w: { squat: 45, bench: 45, row: 65, ohp: 45, deadlift: 95, dbrow: 20, dbcurl: 10, dbshrug: 20, dbtri: 10, dblat: 5, dbfly: 5, dbpress: 30 },
     inc: { squat: 5, bench: 5, row: 5, ohp: 5, deadlift: 10, dbrow: 5, dbcurl: 5, dbshrug: 5, dbtri: 5, dblat: 5, dbfly: 5, dbpress: 5 },
     incs: [2.5, 5, 10],
@@ -86,6 +86,9 @@ const UNITS = {
 };
 
 /* ---------- Pure logic ---------- */
+
+/* Dumbbells move in their own smaller steps (1 kg); barbell lifts use the plate step. */
+const stepFor = (id, unit) => (LIFTS[id].db ? UNITS[unit].dbStep : UNITS[unit].step);
 
 const roundTo = (x, step) => Math.round(x / step) * step;
 const floorTo = (x, step) => Math.floor(x / step + 1e-9) * step;
@@ -160,7 +163,7 @@ function applyProgression(st, workout) {
       lift.fails = 0;
       if (ex.sets.every((s) => s !== null && s >= target)) {
         notes.push(target >= hi
-          ? `${name}: hit ${n}×${hi} at ${num(ex.w)}${st.unit}. Next time the workout suggests ${num(ex.w + UNITS[st.unit].step)}${st.unit}`
+          ? `${name}: hit ${n}×${hi} at ${num(ex.w)}${st.unit}. Next time the workout suggests ${num(ex.w + stepFor(ex.id, st.unit))}${st.unit}`
           : `${name}: all reps done, next time ${n}×${Math.min(hi, target + 1)} at ${num(ex.w)}${st.unit}`);
       } else {
         notes.push(`${name}: missed reps, repeat ${n}×${target} at ${num(ex.w)}${st.unit}`);
@@ -268,7 +271,7 @@ function forecast(st, sessions, targets) {
     sim[id] = { w: l.w, inc: l.inc, every: l.every || 1, streak: l.streak || 0, target: null };
     if (hasRange(id)) {
       const plan = dumbbellPlan(st, id);
-      sim[id] = { ...sim[id], w: plan.suggest || plan.w, inc: UNITS[st.unit].step, target: plan.suggest ? LIFTS[id].range[0] : plan.reps };
+      sim[id] = { ...sim[id], w: plan.suggest || plan.w, inc: stepFor(id, st.unit), target: plan.suggest ? LIFTS[id].range[0] : plan.reps };
     }
   }
   const out = {};
@@ -1094,13 +1097,13 @@ if (typeof document !== 'undefined') (() => {
       case 'set': tapSet(Number(d.e), Number(d.s)); break;
       case 'w-': case 'w+': {
         const ex = state.active.ex[Number(d.e)];
-        const by = Math.min(step, state.lifts[ex.id].inc);
+        const by = LIFTS[ex.id].db ? stepFor(ex.id, state.unit) : Math.min(step, state.lifts[ex.id].inc);
         ex.w = Math.max(minW(ex.id, state.bar, state.unit), ex.w + (d.act === 'w+' ? by : -by));
         break;
       }
       case 'l-': case 'l+': {
         const l = state.lifts[d.id];
-        const by = Math.min(step, l.inc);
+        const by = LIFTS[d.id].db ? stepFor(d.id, state.unit) : Math.min(step, l.inc);
         l.w = Math.max(minW(d.id, state.bar, state.unit), l.w + (d.act === 'l+' ? by : -by));
         l.fails = 0;
         l.streak = 0;
@@ -1147,7 +1150,7 @@ if (typeof document !== 'undefined') (() => {
       case 'ew-': case 'ew+': {
         const ex = draft.ex[Number(d.e)];
         const u = UNITS[draft.unit];
-        const by = Math.min(u.step, draft.unit === state.unit ? state.lifts[ex.id].inc : u.step);
+        const by = LIFTS[ex.id].db ? u.dbStep : Math.min(u.step, draft.unit === state.unit ? state.lifts[ex.id].inc : u.step);
         const bar = draft.unit === state.unit ? state.bar : u.bar;
         ex.w = Math.max(minW(ex.id, bar, draft.unit), ex.w + (d.act === 'ew+' ? by : -by));
         render();
