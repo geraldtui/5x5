@@ -15,15 +15,18 @@ const LIFTS = {
   deadlift: { name: 'Deadlift', sets: 1 },
   dbrow: { name: 'Dumbbell Row', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
   dbcurl: { name: 'Dumbbell Curl', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
-  dbshrug: { name: 'Dumbbell Shrug', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
+  dbshrug: { name: 'Dumbbell Shrug', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE, retired: true },
   dbtri: { name: 'Dumbbell Triceps Extension', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
   dblat: { name: 'Dumbbell Lateral Raise', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
   dbfly: { name: 'Dumbbell Reverse Fly', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
+  dbpress: { name: 'Dumbbell Chest Press', sets: 3, reps: 10, db: true, opt: true, range: REP_RANGE },
 };
-/* Optional accessories fill in what each day's main lifts miss: arms and shoulders on A, upper-back pulling on B. */
+/* Lifts no longer in either workout stay defined so their history still shows. */
+const inUse = (id) => WORKOUTS.A.includes(id) || WORKOUTS.B.includes(id);
+/* Optional accessories fill in what each day's main lifts miss: arms and shoulders on A; upper-back pulling and chest pressing on B. */
 const WORKOUTS = {
   A: ['squat', 'bench', 'row', 'dbcurl', 'dbtri', 'dblat'],
-  B: ['squat', 'ohp', 'deadlift', 'dbrow', 'dbfly', 'dbshrug'],
+  B: ['squat', 'ohp', 'deadlift', 'dbrow', 'dbfly', 'dbpress'],
 };
 const REPS = 5;
 const repsFor = (id) => LIFTS[id].reps || REPS;
@@ -66,16 +69,16 @@ const LB_PER_KG = 2.20462;
 const UNITS = {
   kg: {
     bar: 20, step: 2.5,
-    w: { squat: 20, bench: 20, row: 30, ohp: 20, deadlift: 40, dbrow: 10, dbcurl: 5, dbshrug: 10, dbtri: 5, dblat: 2.5, dbfly: 2.5 },
-    inc: { squat: 2.5, bench: 2.5, row: 2.5, ohp: 2.5, deadlift: 5, dbrow: 2.5, dbcurl: 2.5, dbshrug: 2.5, dbtri: 2.5, dblat: 2.5, dbfly: 2.5 },
+    w: { squat: 20, bench: 20, row: 30, ohp: 20, deadlift: 40, dbrow: 10, dbcurl: 5, dbshrug: 10, dbtri: 5, dblat: 2.5, dbfly: 2.5, dbpress: 15 },
+    inc: { squat: 2.5, bench: 2.5, row: 2.5, ohp: 2.5, deadlift: 5, dbrow: 2.5, dbcurl: 2.5, dbshrug: 2.5, dbtri: 2.5, dblat: 2.5, dbfly: 2.5, dbpress: 2.5 },
     incs: [1.25, 2.5, 5],
     bars: [20, 15, 10],
     plates: [25, 20, 15, 10, 5, 2.5, 1.25],
   },
   lb: {
     bar: 45, step: 5,
-    w: { squat: 45, bench: 45, row: 65, ohp: 45, deadlift: 95, dbrow: 20, dbcurl: 10, dbshrug: 20, dbtri: 10, dblat: 5, dbfly: 5 },
-    inc: { squat: 5, bench: 5, row: 5, ohp: 5, deadlift: 10, dbrow: 5, dbcurl: 5, dbshrug: 5, dbtri: 5, dblat: 5, dbfly: 5 },
+    w: { squat: 45, bench: 45, row: 65, ohp: 45, deadlift: 95, dbrow: 20, dbcurl: 10, dbshrug: 20, dbtri: 10, dblat: 5, dbfly: 5, dbpress: 30 },
+    inc: { squat: 5, bench: 5, row: 5, ohp: 5, deadlift: 10, dbrow: 5, dbcurl: 5, dbshrug: 5, dbtri: 5, dblat: 5, dbfly: 5, dbpress: 5 },
     incs: [2.5, 5, 10],
     bars: [45, 35, 25],
     plates: [45, 35, 25, 10, 5, 2.5, 1.25],
@@ -742,7 +745,7 @@ if (typeof document !== 'undefined') (() => {
   const shortDate = (d) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
   function progressView() {
-    const chips = Object.keys(LIFTS).map((id) =>
+    const chips = Object.keys(LIFTS).filter((id) => inUse(id) || state.history.some((h) => h.ex.some((e) => e.id === id))).map((id) =>
       `<button class="chip${id === chartLift ? ' on' : ''}" data-act="chart" data-id="${id}">${LIFTS[id].name}</button>`).join('');
     const now = Date.now();
     const lastLogged = state.history.length ? state.history[state.history.length - 1].date : null;
@@ -788,7 +791,7 @@ if (typeof document !== 'undefined') (() => {
       return `<li><span>${d}</span><span class="muted small">${up > 0 ? `+${fmt(up)}` : 'same'}</span><strong>${fmt(w)}</strong></li>`;
     }).join('');
 
-    const order = Object.keys(LIFTS).sort((a, b) => !!LIFTS[a].opt - !!LIFTS[b].opt);
+    const order = Object.keys(LIFTS).filter(inUse).sort((a, b) => !!LIFTS[a].opt - !!LIFTS[b].opt);
     const table = order.map((id) => {
       const end = ahead[id][FORECAST_WEEKS - 1];
       return `<li><span>${LIFTS[id].name}</span><span class="muted small">${fmt(state.lifts[id].w)} →</span><strong>${fmt(end)}</strong></li>`;
@@ -863,7 +866,7 @@ if (typeof document !== 'undefined') (() => {
           <li>Workout A: Squat, Bench Press, Barbell Row. Workout B: Squat, Overhead Press, Deadlift.</li>
           <li>Alternate A and B, three days a week, with a rest day between.</li>
           <li>Five sets of five reps at the same weight. Deadlift is one set of five.</li>
-          <li>After the main lifts, an optional dumbbell superset: one set of each exercise back to back, rest ${clock(SUPERSET_REST)}, three rounds. Reps climb from ${REP_RANGE[0]} to ${REP_RANGE[1]}, one per set each successful workout. After ${REP_RANGE[1]}, the workout suggests a heavier dumbbell; take it and reps start again at ${REP_RANGE[0]}. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Shrug.</li>
+          <li>After the main lifts, an optional dumbbell superset: one set of each exercise back to back, rest ${clock(SUPERSET_REST)}, three rounds. Reps climb from ${REP_RANGE[0]} to ${REP_RANGE[1]}, one per set each successful workout. After ${REP_RANGE[1]}, the workout suggests a heavier dumbbell; take it and reps start again at ${REP_RANGE[0]}. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Chest Press.</li>
           <li>Hit every rep and the weight goes up next time, or after the number of successful workouts in a row you set above.</li>
           <li>Miss reps and you repeat the weight. Miss ${FAILS_BEFORE_DELOAD} workouts in a row and it drops 10%.</li>
           <li>Rest 1:30 if the last set felt easy, 3:00 if it was hard, 5:00 if you missed reps.</li>
