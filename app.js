@@ -36,14 +36,47 @@ const targetOf = (ex) => ex.reps || repsFor(ex.id);
 /* The reps per set the next workout will aim for. */
 const liftTarget = (st, id) => (hasRange(id) ? dumbbellPlan(st, id).reps : repsFor(id));
 
+/* ---------- Programs ----------
+   A program is one run of StrongLifts 5x5: a name, a start date, and the starting weight of each lift.
+   Every workout belongs to a program, and next weights only look at the current program's workouts,
+   so a restart begins cleanly from its own starting weights. */
+const curProgram = (st) => (st.programs || []).find((p) => p.id === st.program) || null;
+const progHistory = (st) => (st.program ? st.history.filter((h) => h.program === st.program) : st.history);
+const startWeight = (st, id) => {
+  const p = curProgram(st);
+  return p && p.start[id] !== undefined ? p.start[id] : st.lifts[id].w;
+};
+const programName = (date) => `StrongLifts 5x5 · ${new Date(date).toLocaleDateString('en', { month: 'short', year: 'numeric' })}`;
+/* Gives older data its first program: started on the first workout, with each lift's first logged
+   weight as its starting weight. Also files any workout without a program under the current one. */
+function ensurePrograms(st) {
+  if (!Array.isArray(st.programs) || !st.programs.length) {
+    const first = st.history[0];
+    const started = first ? first.date : new Date().toISOString();
+    const start = {};
+    for (const id in LIFTS) {
+      const h = st.history.find((x) => x.ex.some((e) => e.id === id && e.sets.some((v) => v !== null)));
+      start[id] = h ? convert(h.ex.find((e) => e.id === id).w, h.unit, st.unit) : st.lifts[id].w;
+    }
+    st.programs = [{ id: first ? first.id : Date.now(), name: programName(started), started, ended: null, start }];
+    st.program = st.programs[0].id;
+  }
+  if (!curProgram(st)) st.program = st.programs[st.programs.length - 1].id;
+  const p = curProgram(st);
+  for (const id in LIFTS) if (p.start[id] === undefined) p.start[id] = st.lifts[id].w;
+  for (const h of st.history) if (!h.program) h.program = st.program;
+  return st;
+}
+
 /* Works out a dumbbell exercise's next session from its most recent logged one, so edits and
    deletions in History are reflected straight away. Same weight; one more rep per set if every set
    hit the target, up to the top of the range; once the top is hit, a heavier dumbbell is suggested
    (one step up). With nothing logged yet it starts from the working weight at the default reps. */
 function dumbbellPlan(st, id) {
   const [lo, hi] = LIFTS[id].range;
-  for (let i = st.history.length - 1; i >= 0; i--) {
-    const h = st.history[i];
+  const hist = progHistory(st);
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const h = hist[i];
     const ex = h.ex.find((e) => e.id === id && e.sets.some((v) => v !== null));
     if (!ex) continue;
     const w = convert(ex.w, h.unit, st.unit);
@@ -52,7 +85,7 @@ function dumbbellPlan(st, id) {
     if (done && target >= hi) return { w, reps: hi, suggest: w + stepFor(id, st.unit), last: { w, sets: ex.sets } };
     return { w, reps: done ? target + 1 : target, last: { w, sets: ex.sets } };
   }
-  return { w: st.lifts[id].w, reps: repsFor(id), last: null };
+  return { w: startWeight(st, id), reps: repsFor(id), last: null };
 }
 /* The optional dumbbell accessories in each workout are done as one superset: a set of each, back to
    back, then a rest, for as many rounds as they have sets. */
@@ -125,7 +158,7 @@ function freshState(unit) {
   for (const id in LIFTS) {
     lifts[id] = { w: u.w[id], inc: u.inc[id], every: 1, streak: 0, fails: 0 };
   }
-  return { v: 1, unit, bar: u.bar, lifts, next: 'A', history: [], active: null };
+  return ensurePrograms({ v: 1, unit, bar: u.bar, lifts, next: 'A', history: [], active: null });
 }
 
 function convert(w, from, to) {
@@ -158,24 +191,25 @@ function warmups(w, bar, unit) {
 
 /* The next working weight of a lift comes straight from the last workout that had it: all reps done
    adds the increment, any missed reps repeat the weight. Dumbbells keep the last weight (their reps
-   climb instead). A lift with no logged workouts keeps the starting weight set in Settings. */
+   climb instead). A lift not yet done in this program starts at the program's starting weight. */
 function deriveLift(st, id) {
   const l = st.lifts[id];
-  for (let i = st.history.length - 1; i >= 0; i--) {
-    const h = st.history[i];
+  const hist = progHistory(st);
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const h = hist[i];
     const ex = h.ex.find((e) => e.id === id && e.sets.some((v) => v !== null));
     if (!ex) continue;
     const w = convert(ex.w, h.unit, st.unit);
     const ok = !hasRange(id) && ex.sets.every((v) => v === targetOf(ex));
     return { w: ok ? w + l.inc : w, fails: 0, streak: 0, every: 1 };
   }
-  return { w: l.w, fails: 0, streak: 0, every: 1 };
+  return { w: startWeight(st, id), fails: 0, streak: 0, every: 1 };
 }
 function deriveLifts(st) {
   for (const id in LIFTS) if (st.lifts[id]) Object.assign(st.lifts[id], deriveLift(st, id));
   return st;
 }
-const hasLogged = (st, id) => st.history.some((h) => h.ex.some((e) => e.id === id && e.sets.some((v) => v !== null)));
+const hasLogged = (st, id) => progHistory(st).some((h) => h.ex.some((e) => e.id === id && e.sets.some((v) => v !== null)));
 
 /* Applies the progression rules to `st` for a finished workout. Returns notes. */
 function applyProgression(st, workout) {
@@ -249,7 +283,10 @@ function mergeStates(device, repo, now = Date.now()) {
   const byId = new Map();
   for (const h of [...other.history, ...base.history]) if (!gone.has(h.id)) byId.set(h.id, h);
   const history = [...byId.values()].sort((a, b) => new Date(a.date) - new Date(b.date));
-  return { ...base, history, deleted, active: null, updated: now };
+  const programs = [...(base.programs || [])];
+  for (const p of other.programs || []) if (!programs.some((q) => q.id === p.id)) programs.push(p);
+  programs.sort((a, b) => new Date(a.started) - new Date(b.started));
+  return { ...base, programs, history, deleted, active: null, updated: now };
 }
 
 const TRAINING_DAYS = [1, 3, 5]; // Monday, Wednesday, Friday (Date.getDay numbering)
@@ -336,6 +373,7 @@ if (typeof document !== 'undefined') (() => {
   let draft = null;
   /* Which workout's exercises the Settings screen is showing. */
   let settingsGroup = state.next;
+  let newProg = null; /* the "start a new program" form while it is open */
   /* Set when a new version of the app has been downloaded; the page reloads at the next safe moment. */
   let updateReady = false;
 
@@ -347,7 +385,7 @@ if (typeof document !== 'undefined') (() => {
       if (!s.lifts[id].every) s.lifts[id].every = 1;
       if (!s.lifts[id].streak) s.lifts[id].streak = 0;
     }
-    return s;
+    return ensurePrograms(s);
   }
   function load() {
     try {
@@ -727,11 +765,16 @@ if (typeof document !== 'undefined') (() => {
   function historyView() {
     if (!state.history.length) return '<h1>History</h1><p class="hint">Finished workouts show up here.</p>';
     if (draft) return editView();
-    const items = state.history.slice().reverse().map((h) =>
-      histCard(h, `<div class="row">
+    const names = Object.fromEntries((state.programs || []).map((p) => [p.id, p.name]));
+    let lastProg;
+    const items = state.history.slice().reverse().map((h) => {
+      const head = (state.programs || []).length > 1 && h.program !== lastProg ? `<h3 class="section">${names[h.program] || 'Program'}</h3>` : '';
+      lastProg = h.program;
+      return head + histCard(h, `<div class="row">
         <button class="link small" data-act="edit" data-id="${h.id}">Edit</button>
         <button class="link danger small" data-act="del" data-id="${h.id}">Delete</button>
-      </div>`)).join('');
+      </div>`);
+    }).join('');
     return `<h1>History</h1>${items}`;
   }
 
@@ -871,12 +914,13 @@ if (typeof document !== 'undefined') (() => {
       const opts = u.incs.map((v) => `<option value="${v}"${v === l.inc ? ' selected' : ''}>+${fmt(v)}</option>`).join('');
       return `<div class="lift-set">
         <div class="row"><span>${LIFTS[id].name}${shared}</span>
-          ${hasLogged(state, id) ? `<strong>${fmt(l.w)}</strong>` : `<div class="stepper">
+          ${hasLogged(state, id) ? `<strong>${fmt(l.w)}</strong>` : `<div class="stepper" title="Starting weight">
             <button data-act="l-" data-id="${id}" aria-label="Less weight">−</button>
             ${wInput('l', `data-id="${id}"`, l.w)}
             <button data-act="l+" data-id="${id}" aria-label="More weight">+</button>
           </div>`}
         </div>
+        <div class="sub"><span>${hasLogged(state, id) ? `Next weight · started at ${fmt(startWeight(state, id))}` : 'Starting weight'}</span></div>
         <div class="sub"><span>Weight to add</span><select data-inc="${id}">${opts}</select></div>
       </div>`;
     };
@@ -886,21 +930,21 @@ if (typeof document !== 'undefined') (() => {
         <p class="muted small" style="margin:4px 0 0">Nothing to set here: each workout works out the weight and reps from your last session. Finish every set and the next one adds a rep to each, up to ${REP_RANGE[1]}; after that the workout suggests the next dumbbell up, and you change weight there.</p>
         ${ids.filter(inSuperset).map(dumbbellRow).join('')}</div>`;
     const bars = u.bars.map((v) => `<option value="${v}"${v === state.bar ? ' selected' : ''}>${fmt(v)}</option>`).join('');
+    if (newProg) return newProgramView();
+    const p = curProgram(state);
+    const done = progHistory(state).length;
     return `<h1>Settings</h1>
+      <h3 class="section">Program</h3>
       <section class="card">
-        <div class="field"><span>Units</span><div class="seg">
-          <button data-act="unit" data-u="kg" class="${state.unit === 'kg' ? 'on' : ''}">kg</button>
-          <button data-act="unit" data-u="lb" class="${state.unit === 'lb' ? 'on' : ''}">lb</button>
-        </div></div>
-        <div class="field"><span>Bar weight</span><select id="bar">${bars}</select></div>
-      </section>
-      <section class="card">
-        <div class="row"><h2>Exercises</h2><div class="seg">
+        <div class="row"><h2>${p.name}</h2></div>
+        <p class="muted small" style="margin:2px 0 8px">Started ${dateStr(p.started)} · ${done} workout${done === 1 ? '' : 's'}</p>
+        <div class="row"><h3 class="sub-h" style="margin:0">Exercises</h3><div class="seg">
           <button data-act="sgroup" data-g="A" class="${settingsGroup === 'A' ? 'on' : ''}">Workout A</button>
           <button data-act="sgroup" data-g="B" class="${settingsGroup === 'B' ? 'on' : ''}">Workout B</button>
         </div></div>
-        <p class="muted small" style="margin:6px 0 4px">Next weight for each exercise and how much to add. Once a lift has a logged workout, its next weight comes from that workout; change it during the workout if you need to. Squat is in both workouts; changing it here changes it for both.</p>
+        <p class="muted small" style="margin:6px 0 4px">Next weights come from your last workout in this program, so they can't be set here; change one during the workout if you need to. Lifts you haven't done yet in this program show their starting weight, which you can still change.</p>
         ${lifts}
+        <button class="secondary" data-act="np-open">Start a new program</button>
       </section>
       <section class="card"><h2>How the program works</h2>
         <ul class="rules">
@@ -910,7 +954,16 @@ if (typeof document !== 'undefined') (() => {
           <li>After the main lifts, an optional dumbbell superset: one set of each exercise back to back, rest ${clock(SUPERSET_REST)}, three rounds. Reps climb from ${REP_RANGE[0]} to ${REP_RANGE[1]}, one per set each successful workout. After ${REP_RANGE[1]}, the workout suggests a heavier dumbbell; take it and reps start again at ${REP_RANGE[0]}. A: Curl, Triceps Extension, Lateral Raise. B: Row, Reverse Fly, Chest Press.</li>
           <li>Your next weight comes from your last workout with that lift: hit every rep and it goes up by the amount above; miss any and you repeat it.</li>
           <li>Rest 1:30 if the last set felt easy, 3:00 if it was hard, 5:00 if you missed reps.</li>
+          <li>Stalled, or back after a break? Start a new program from lighter weights. Your history and streaks carry over.</li>
         </ul>
+      </section>
+      <h3 class="section">App</h3>
+      <section class="card">
+        <div class="field"><span>Units</span><div class="seg">
+          <button data-act="unit" data-u="kg" class="${state.unit === 'kg' ? 'on' : ''}">kg</button>
+          <button data-act="unit" data-u="lb" class="${state.unit === 'lb' ? 'on' : ''}">lb</button>
+        </div></div>
+        <div class="field"><span>Bar weight</span><select id="bar">${bars}</select></div>
       </section>
       ${syncCard()}
       <button class="secondary" data-act="export">Back up data</button>
@@ -919,6 +972,30 @@ if (typeof document !== 'undefined') (() => {
       <p class="hint">${token
         ? 'Workouts are saved on this device and synced to GitHub. Backups are optional.'
         : `Workouts are saved on this device. Connect GitHub above to sync them, or back up and push ${DATA_FILE} by hand.`}</p>`;
+  }
+
+  function newProgramView() {
+    const ids = [...WORKOUTS.A, ...WORKOUTS.B].filter((id, i, a) => a.indexOf(id) === i);
+    const row = (id) => `<div class="lift-set"><div class="row"><span>${LIFTS[id].name}</span>
+        <div class="stepper">
+          <button data-act="np-" data-id="${id}" aria-label="Less weight">−</button>
+          ${wInput('np', `data-id="${id}"`, newProg.start[id])}
+          <button data-act="np+" data-id="${id}" aria-label="More weight">+</button>
+        </div></div>
+        <div class="sub"><span>Now ${fmt(state.lifts[id].w)}</span></div></div>`;
+    const cur = curProgram(state);
+    return `<h1>New program</h1>
+      <section class="card">
+        <label class="field col"><span>Name</span><input id="np-name" class="text" value="${newProg.name.replace(/"/g, '&quot;')}"></label>
+        <div class="row" style="margin-top:10px"><h3 class="sub-h" style="margin:0">Starting weights</h3>
+          <div class="seg"><button data-act="np-next">Current</button><button data-act="np-90">90%</button></div></div>
+        <p class="muted small" style="margin:6px 0 4px">Prefilled with your current next weights. Tap 90% to start a little lighter, or set each one.</p>
+        <div class="group"><h3 class="sub-h">Main lifts</h3>${ids.filter((id) => !inSuperset(id)).map(row).join('')}</div>
+        <div class="group"><h3 class="sub-h">Dumbbells</h3>${ids.filter(inSuperset).map(row).join('')}</div>
+      </section>
+      <button class="primary" data-act="np-start">Start program</button>
+      <button class="secondary" data-act="np-cancel">Cancel</button>
+      <p class="hint">${cur ? `This ends ${cur.name}. ` : ''}Its workouts stay in History, and your streaks carry on. The new program starts with Workout A.</p>`;
   }
 
   /* ----- Rest timer and elapsed clock ----- */
@@ -1008,6 +1085,7 @@ if (typeof document !== 'undefined') (() => {
       id: Date.now(),
       date: new Date().toISOString(),
       type: a.type,
+      program: state.program,
       unit: state.unit,
       mins: Math.max(1, Math.round((Date.now() - a.started) / 60000)),
       ex: a.ex.map((ex) => ({ id: ex.id, w: ex.w, sets: ex.sets, ...(ex.reps ? { reps: ex.reps } : {}) })),
@@ -1063,6 +1141,7 @@ if (typeof document !== 'undefined') (() => {
       state.lifts[id].w = Math.max(minW(id, UNITS[unit].bar, unit), convert(state.lifts[id].w, from, unit));
       state.lifts[id].inc = UNITS[unit].inc[id];
     }
+    for (const p of state.programs) for (const id in p.start) p.start[id] = Math.max(minW(id, UNITS[unit].bar, unit), convert(p.start[id], from, unit));
     state.unit = unit;
     state.bar = UNITS[unit].bar;
   }
@@ -1098,18 +1177,19 @@ if (typeof document !== 'undefined') (() => {
     const t = ev.target;
     if (t.id === 'bar') state.bar = Number(t.value);
     else if (t.dataset.inc) state.lifts[t.dataset.inc].inc = Number(t.value);
-    else if (t.dataset.every) state.lifts[t.dataset.every].every = Number(t.value);
+    else if (t.id === 'np-name') { newProg.name = t.value; return; }
     else if (t.dataset.wedit) {
       const v = Math.round(Number(t.value) * 100) / 100;
       const k = t.dataset.wedit;
-      const id = k === 'l' ? t.dataset.id : (k === 'w' ? state.active : draft).ex[Number(t.dataset.e)].id;
+      const id = k === 'l' || k === 'np' ? t.dataset.id : (k === 'w' ? state.active : draft).ex[Number(t.dataset.e)].id;
       const unit = k === 'ew' ? draft.unit : state.unit;
       const bar = k === 'ew' && draft.unit !== state.unit ? UNITS[unit].bar : state.bar;
       if (!Number.isFinite(v) || v <= 0) { render(); return; }
       const w = Math.max(minW(id, bar, unit), v);
-      if (k === 'l') { const l = state.lifts[id]; l.w = w; l.fails = 0; l.streak = 0; }
+      if (k === 'l') curProgram(state).start[id] = w;
+      else if (k === 'np') newProg.start[id] = w;
       else (k === 'w' ? state.active : draft).ex[Number(t.dataset.e)].w = w;
-      if (k === 'ew') { render(); return; }
+      if (k === 'ew' || k === 'np') { render(); return; }
     }
     else return;
     save();
@@ -1136,9 +1216,48 @@ if (typeof document !== 'undefined') (() => {
       case 'l-': case 'l+': {
         const l = state.lifts[d.id];
         const by = LIFTS[d.id].db ? stepFor(d.id, state.unit) : Math.min(step, l.inc);
-        l.w = Math.max(minW(d.id, state.bar, state.unit), l.w + (d.act === 'l+' ? by : -by));
-        l.fails = 0;
-        l.streak = 0;
+        curProgram(state).start[d.id] = Math.max(minW(d.id, state.bar, state.unit), l.w + (d.act === 'l+' ? by : -by));
+        break;
+      }
+      case 'np-': case 'np+': {
+        const by = LIFTS[d.id].db ? stepFor(d.id, state.unit) : Math.min(step, state.lifts[d.id].inc);
+        newProg.start[d.id] = Math.max(minW(d.id, state.bar, state.unit), newProg.start[d.id] + (d.act === 'np+' ? by : -by));
+        render();
+        return;
+      }
+      case 'np-open':
+        if (state.active) { alert('Finish or discard the current workout first.'); return; }
+        const base = programName(new Date());
+        const taken = (n) => state.programs.some((q) => q.name === n);
+        let name = base;
+        for (let k = 2; taken(name); k++) name = `${base} (${k})`;
+        newProg = { name, start: Object.fromEntries(Object.keys(LIFTS).filter(inUse).map((id) => [id, state.lifts[id].w])) };
+        render(); window.scrollTo(0, 0);
+        return;
+      case 'np-90':
+        for (const id in newProg.start) {
+          const step = stepFor(id, state.unit);
+          newProg.start[id] = Math.max(minW(id, state.bar, state.unit), floorTo(state.lifts[id].w * DELOAD, step));
+        }
+        render();
+        return;
+      case 'np-next':
+        for (const id in newProg.start) newProg.start[id] = state.lifts[id].w;
+        render();
+        return;
+      case 'np-cancel': newProg = null; render(); return;
+      case 'np-start': {
+        const now = new Date().toISOString();
+        const cur = curProgram(state);
+        if (cur) cur.ended = now;
+        const p = { id: Date.now(), name: (newProg.name || '').trim() || programName(now), started: now, ended: null,
+          start: { ...Object.fromEntries(Object.keys(LIFTS).map((id) => [id, state.lifts[id].w])), ...newProg.start } };
+        state.programs.push(p);
+        state.program = p.id;
+        state.next = 'A';
+        newProg = null;
+        flash = null;
+        tab = 'workout';
         break;
       }
       case 'rest-x': state.active.rest = null; break;

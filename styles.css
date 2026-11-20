@@ -310,3 +310,10 @@ select {
 .streak.cold { background: var(--card); border-color: var(--line); }
 .streak.cold strong { color: var(--muted); }
 .confetti { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1000; }
+.field.col { flex-direction: column; align-items: stretch; gap: 6px; border-top: 0; padding: 0; }
+input.text {
+  width: 100%; padding: 10px 12px; border-radius: 10px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  font: inherit; font-size: 16px; -webkit-user-select: text; user-select: text;
+}
+input.text:focus { outline: none; border-color: var(--accent); }
