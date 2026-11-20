@@ -778,6 +778,40 @@ if (typeof document !== 'undefined') (() => {
     draft = null;
   }
 
+  /* Deleting a workout winds back the lifts it was the last word on: each one is set to what it was
+     before that workout, or, for older records without that snapshot, worked out again from the
+     previous workout that had it. Lifts done again in a later workout keep what that workout set.
+     Deleting the latest workout also makes its type the next workout again. */
+  function deleteWorkout(id) {
+    const i = state.history.findIndex((h) => String(h.id) === String(id));
+    if (i < 0) return;
+    const gone = state.history[i];
+    const wasLatest = i === state.history.length - 1;
+    state.history.splice(i, 1);
+    const rest = state.history;
+    for (const ex of gone.ex) {
+      const lid = ex.id;
+      if (!state.lifts[lid] || rest.slice(i).some((h) => h.ex.some((e) => e.id === lid))) continue;
+      if (gone.prev && gone.prev.lifts[lid] && gone.unit === state.unit) {
+        state.lifts[lid] = { ...gone.prev.lifts[lid] };
+        continue;
+      }
+      let j = i - 1;
+      while (j >= 0 && !rest[j].ex.some((e) => e.id === lid && e.sets.some((v) => v !== null))) j--;
+      if (j < 0 || rest[j].unit !== state.unit) continue;
+      const before = rest[j];
+      const pe = before.ex.find((e) => e.id === lid);
+      const lift = before.prev && before.prev.lifts[lid]
+        ? { ...before.prev.lifts[lid] }
+        : { ...state.lifts[lid], w: pe.w, streak: 0, fails: 0 };
+      const tmp = { unit: state.unit, bar: state.bar, next: state.next, history: rest.slice(0, j), lifts: { [lid]: lift } };
+      applyProgression(tmp, { ...before, ex: [pe] });
+      state.lifts[lid] = tmp.lifts[lid];
+    }
+    if (wasLatest) state.next = gone.prev ? gone.prev.next : gone.type;
+    flash = null;
+  }
+
   const FORECAST_WEEKS = 4;
   const shortDate = (d) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
@@ -1188,8 +1222,8 @@ if (typeof document !== 'undefined') (() => {
       case 'ecancel': draft = null; render(); maybeReload(); return;
       case 'esave': saveEdit(); save(); tab = 'workout'; render(); window.scrollTo(0, 0); maybeReload(); return;
       case 'del':
-        if (!confirm('Delete this workout from your history? Your working weights stay as they are.')) return;
-        state.history = state.history.filter((h) => String(h.id) !== d.id);
+        if (!confirm('Delete this workout? Your next working weights are recalculated without it.')) return;
+        deleteWorkout(d.id);
         /* Remembered so the sync doesn't treat the repository's copy of it as a workout this device is missing. */
         state.deleted = [...(state.deleted || []), Number(d.id)];
         break;
