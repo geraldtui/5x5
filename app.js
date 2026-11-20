@@ -91,6 +91,18 @@ const roundTo = (x, step) => Math.round(x / step) * step;
 const floorTo = (x, step) => Math.floor(x / step + 1e-9) * step;
 const num = (x) => String(Math.round(x * 100) / 100);
 
+/* Streaks: workouts in a row with no more than STREAK_GAP days between them. A three-day week
+   (say Mon, Wed, Fri) is at most a three-day gap, so one extra day of slack keeps it alive. */
+const STREAK_GAP = 4;
+const dayNum = (d) => { const x = new Date(d); return Math.floor(new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() / 86400000); };
+function streaks(history, now = Date.now()) {
+  const days = [...new Set(history.map((h) => dayNum(h.date)))].sort((a, b) => a - b);
+  let best = 0, run = 0;
+  days.forEach((d, i) => { run = i && d - days[i - 1] <= STREAK_GAP ? run + 1 : 1; best = Math.max(best, run); });
+  const alive = days.length && dayNum(now) - days[days.length - 1] <= STREAK_GAP;
+  return { current: alive ? run : 0, best };
+}
+
 function freshState(unit) {
   const u = UNITS[unit];
   const lifts = {};
@@ -571,7 +583,12 @@ if (typeof document !== 'undefined') (() => {
       return `${head}<li${inSuperset(id) ? ' class="ss"' : ''}><span>${LIFTS[id].name}${badge}</span><span class="sr">${LIFTS[id].sets}×${liftTarget(state, id)}</span><strong>${fmt(plan ? plan.w : l.w)}</strong></li>`;
     }).join('');
     const done = flash ? `<section class="card"><h2>Workout logged</h2><ul class="rules">${flash.map((n) => `<li>${n}</li>`).join('')}</ul></section>` : '';
-    return `<h1>Next up</h1>${done}
+    const st = streaks(state.history);
+    const streakHtml = st.best ? `<div class="streak${st.current ? '' : ' cold'}">
+        <span class="flame">${st.current ? '🔥' : '🧊'}</span>
+        <span><strong>${st.current}</strong> workout streak</span>
+        <span class="muted small">Best ${st.best}</span></div>` : '';
+    return `${streakHtml}<h1>Next up</h1>${done}
       <section class="card">
         <div class="row"><h2>Workout ${type}</h2><button class="link" data-act="swap">Switch to ${other}</button></div>
         <ul class="plan">${rows}</ul>
@@ -978,6 +995,41 @@ if (typeof document !== 'undefined') (() => {
     state.history.push(entry);
     state.active = null;
     keepAwake(false);
+    confetti();
+  }
+
+  /* A short burst of confetti over the page when a workout is logged. */
+  function confetti() {
+    if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const c = document.createElement('canvas');
+    c.className = 'confetti';
+    const dpr = window.devicePixelRatio || 1;
+    const W = innerWidth, H = innerHeight;
+    c.width = W * dpr; c.height = H * dpr;
+    document.body.appendChild(c);
+    const g = c.getContext('2d');
+    g.scale(dpr, dpr);
+    const colors = ['#f5a524', '#4cc38a', '#ef5350', '#4aa3ff', '#c77dff', '#f2f3f5'];
+    const bits = Array.from({ length: 160 }, (_, i) => {
+      const left = i % 2 === 0;
+      const ang = (left ? -60 : -120) * Math.PI / 180 + (Math.random() - 0.5) * 0.9;
+      const sp = 9 + Math.random() * 9;
+      return { x: left ? 0 : W, y: H * 0.75, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+        w: 6 + Math.random() * 6, h: 4 + Math.random() * 4, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4,
+        c: colors[i % colors.length] };
+    });
+    const t0 = performance.now();
+    (function frame(t) {
+      const age = t - t0;
+      g.clearRect(0, 0, W, H);
+      g.globalAlpha = Math.max(0, 1 - Math.max(0, age - 2200) / 800);
+      for (const b of bits) {
+        b.vy += 0.3; b.vx *= 0.985; b.vy *= 0.985; b.x += b.vx; b.y += b.vy; b.r += b.vr;
+        g.save(); g.translate(b.x, b.y); g.rotate(b.r); g.fillStyle = b.c;
+        g.fillRect(-b.w / 2, -b.h / 2, b.w, b.h * Math.abs(Math.cos(b.r * 2))); g.restore();
+      }
+      if (age < 3000) requestAnimationFrame(frame); else c.remove();
+    })(t0);
   }
 
   function setUnit(unit) {

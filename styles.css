@@ -283,3 +283,15 @@ select {
   border: 1px solid rgba(76, 195, 138, 0.35);
 }
 .suggest.on { color: var(--muted); background: transparent; border-color: var(--line); font-weight: 500; }
+
+.streak {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(245, 165, 36, 0.12); border: 1px solid rgba(245, 165, 36, 0.35);
+  border-radius: 14px; padding: 10px 14px; margin: 4px 0 12px;
+}
+.streak strong { font-size: 22px; color: var(--accent); margin-right: 2px; }
+.streak .flame { font-size: 22px; }
+.streak .muted { margin-left: auto; }
+.streak.cold { background: var(--card); border-color: var(--line); }
+.streak.cold strong { color: var(--muted); }
+.confetti { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1000; }
