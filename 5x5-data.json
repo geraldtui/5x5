@@ -4,21 +4,21 @@
   "bar": 20,
   "lifts": {
     "squat": {
-      "w": 70,
+      "w": 72.5,
       "inc": 2.5,
       "fails": 0,
       "every": 1,
       "streak": 0
     },
     "bench": {
-      "w": 52.5,
+      "w": 55,
       "inc": 2.5,
       "fails": 0,
       "every": 1,
       "streak": 0
     },
     "row": {
-      "w": 52.5,
+      "w": 55,
       "inc": 2.5,
       "fails": 0,
       "every": 1,
@@ -94,7 +94,7 @@
       "streak": 0
     }
   },
-  "next": "A",
+  "next": "B",
   "history": [
     {
       "id": 1762028640000,
@@ -880,10 +880,133 @@
           }
         }
       }
+    },
+    {
+      "id": 1795624581126,
+      "date": "2026-11-25T16:36:21.126Z",
+      "type": "A",
+      "program": 1762028640000,
+      "unit": "kg",
+      "mins": 102,
+      "ex": [
+        {
+          "id": "squat",
+          "w": 70,
+          "sets": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "id": "bench",
+          "w": 52.5,
+          "sets": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "id": "row",
+          "w": 52.5,
+          "sets": [
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "id": "dbcurl",
+          "w": 10,
+          "sets": [
+            12,
+            12,
+            12
+          ],
+          "reps": 12
+        },
+        {
+          "id": "dbtri",
+          "w": 15,
+          "sets": [
+            12,
+            12,
+            12
+          ],
+          "reps": 12
+        },
+        {
+          "id": "dblat",
+          "w": 10,
+          "sets": [
+            12,
+            12,
+            12
+          ],
+          "reps": 12
+        }
+      ],
+      "prev": {
+        "next": "A",
+        "lifts": {
+          "squat": {
+            "w": 70,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0
+          },
+          "bench": {
+            "w": 52.5,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0
+          },
+          "row": {
+            "w": 52.5,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0
+          },
+          "dbcurl": {
+            "w": 10,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0,
+            "target": 10
+          },
+          "dbtri": {
+            "w": 15,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0,
+            "target": 10
+          },
+          "dblat": {
+            "w": 10,
+            "inc": 2.5,
+            "fails": 0,
+            "every": 1,
+            "streak": 0,
+            "target": 10
+          }
+        }
+      }
     }
   ],
   "active": null,
-  "updated": 1795450762070,
+  "updated": 1795624581163,
   "deleted": [
     1795193408936
   ],
